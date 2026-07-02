@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     BASE_DIR: Path = BASE_DIR
 
+    # --- RunPod Cloud Integration ---
+    RUNPOD_API_KEY: str | None = None
+    RUNPOD_ENDPOINT_ID: str | None = None
+
     # --- Model Weights ---
     MODELS_DIR: Path = BASE_DIR / "model_weights"
 

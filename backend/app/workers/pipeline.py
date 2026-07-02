@@ -15,6 +15,7 @@ from app.services.matching import match_objects
 from app.services.rules import RuleEngine
 from app.services.reporting import generate_vector_report, generate_final_report
 from app.services.fiber_overview import FiberOverviewProcessor
+from app.services.storage import download_from_storage, upload_to_storage
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,12 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
         # Route selected DPI to detector so it loads correct thresholds
         if detector is not None:
             detector.dpi = dpi
+
+        # Download from cloud if GCS endpoints are stored
+        if job.get("before_path_gcs"):
+            download_from_storage(job["before_path_gcs"], Path(job["before_path"]))
+        if job.get("after_path_gcs"):
+            download_from_storage(job["after_path_gcs"], Path(job["after_path"]))
 
         # ── Phase 1: Alignment ────────────────────────────────────────────────
         if job.get("status") == JobStatus.QUEUED:
@@ -284,6 +291,13 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 title_font_size=24,
             )
             logger.info(f"[{job_id}] Final report saved to: {out / 'report.pdf'}")
+            
+            # Upload report to GCS
+            report_path = out / "report.pdf"
+            gcs_uri = upload_to_storage(report_path, f"jobs/{job_id}/report.pdf")
+            if gcs_uri:
+                job_store[job_id]["report_path_gcs"] = f"jobs/{job_id}/report.pdf"
+
             job_store[job_id].update({
                 "status":      JobStatus.COMPLETED,
                 "progress":    100.0,
@@ -325,6 +339,10 @@ def run_fiber_overview_pipeline(job_id, job_store, settings, processor=None, **k
 
         _update(JobStatus.PROCESSING, 20.0, "Rendering fiber overview map...")
         logger.info(f"[{job_id}] Rendering fiber overview map...")
+
+        # Download from cloud if GCS endpoints are stored
+        if job.get("pdf_path_gcs"):
+            download_from_storage(job["pdf_path_gcs"], Path(job["pdf_path"]))
 
         # ── Render PDF to image ───────────────────────────────────────────────
         pdf_path = Path(job["pdf_path"])
@@ -392,6 +410,11 @@ def run_fiber_overview_pipeline(job_id, job_store, settings, processor=None, **k
             title_font_size=14,
         )
         logger.info(f"[{job_id}] Fiber Overview report saved to: {report_path}")
+
+        # Upload report to GCS
+        gcs_uri = upload_to_storage(report_path, f"jobs/{job_id}/report.pdf")
+        if gcs_uri:
+            job_store[job_id]["report_path_gcs"] = f"jobs/{job_id}/report.pdf"
 
         job_store[job_id].update({
             "status":      JobStatus.COMPLETED,

@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import json
 import logging
+import requests
 import secrets
 import shutil
 import time
 import uuid
 from pathlib import Path
+from app.services.storage import upload_to_storage, download_from_storage
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
@@ -121,28 +123,63 @@ async def submit_coax_before_job(
         "stage_times": {},
         "pipeline_type": "coax_before",
     }
+    # Upload to Cloud
+    if "pdf_path" in locals() and pdf_path:
+        gcs_uri = upload_to_storage(pdf_path, f"jobs/{job_id}/map.pdf")
+        if gcs_uri:
+            job_record["pdf_path_gcs"] = f"jobs/{job_id}/map.pdf"
+            pdf_path.unlink(missing_ok=True)
+            
+    if "before_path" in locals() and before_path:
+        before_gcs = upload_to_storage(before_path, f"jobs/{job_id}/before.pdf")
+        if before_gcs:
+            job_record["before_path_gcs"] = f"jobs/{job_id}/before.pdf"
+            before_path.unlink(missing_ok=True)
+            
+    if "after_path" in locals() and after_path:
+        after_gcs = upload_to_storage(after_path, f"jobs/{job_id}/after.pdf")
+        if after_gcs:
+            job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
+            after_path.unlink(missing_ok=True)
+
     await store.set(job_id, job_record)
 
-    # Dispatch Celery task with local fallback for coax before
-    try:
-        run_coax_before_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-    except Exception as celery_err:
-        import asyncio
-        from app.services.coax_before import run_coax_before_pipeline
-        loop = asyncio.get_running_loop()
-        pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
-        _stub: dict[str, dict] = {job_id: dict(job_record)}
-        
-        async def _run_and_sync():
-            try:
-                await asyncio.wait_for(
-                    loop.run_in_executor(pipeline_pool, run_coax_before_pipeline, job_id, _stub, settings),
-                    timeout=settings.JOB_TIMEOUT_SECONDS,
-                )
-                await store.set(job_id, _stub[job_id])
-            except asyncio.TimeoutError:
-                await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
-        asyncio.ensure_future(_run_and_sync())
+    # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
+    _dispatched = False
+    if settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
+        try:
+            resp = requests.post(
+                f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/run",
+                headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}", "Content-Type": "application/json"},
+                json={"input": _serialize_for_celery(job_record)},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            logger.info(f"[{job_id}] Dispatched to RunPod Serverless.")
+            _dispatched = True
+        except Exception as _rp_err:
+            logger.warning(f"[{job_id}] RunPod dispatch failed ({_rp_err}). Falling back to Celery.")
+
+    if not _dispatched:
+        try:
+            run_coax_before_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+        except Exception as celery_err:
+            import asyncio
+            from app.services.coax_before import run_coax_before_pipeline
+            loop = asyncio.get_running_loop()
+            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+            _stub: dict[str, dict] = {job_id: dict(job_record)}
+
+            async def _run_and_sync():
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(pipeline_pool, run_coax_before_pipeline, job_id, _stub, settings),
+                        timeout=settings.JOB_TIMEOUT_SECONDS,
+                    )
+                    await store.set(job_id, _stub[job_id])
+                except asyncio.TimeoutError:
+                    await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
+            asyncio.ensure_future(_run_and_sync())
 
 
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
@@ -220,38 +257,64 @@ async def submit_fiber_overview_job(
         "pipeline_type": "fiber_overview",
     }
     # Fix: store.set_job -> store.set
+    # Upload to Cloud
+    if "pdf_path" in locals() and pdf_path:
+        gcs_uri = upload_to_storage(pdf_path, f"jobs/{job_id}/map.pdf")
+        if gcs_uri:
+            job_record["pdf_path_gcs"] = f"jobs/{job_id}/map.pdf"
+            pdf_path.unlink(missing_ok=True)
+            
+    if "before_path" in locals() and before_path:
+        before_gcs = upload_to_storage(before_path, f"jobs/{job_id}/before.pdf")
+        if before_gcs:
+            job_record["before_path_gcs"] = f"jobs/{job_id}/before.pdf"
+            before_path.unlink(missing_ok=True)
+            
+    if "after_path" in locals() and after_path:
+        after_gcs = upload_to_storage(after_path, f"jobs/{job_id}/after.pdf")
+        if after_gcs:
+            job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
+            after_path.unlink(missing_ok=True)
+
     await store.set(job_id, job_record)
-    # Dispatch Celery task with local thread pool fallback
-    try:
-        run_fiber_overview_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-        logger.info(f"[{job_id}] Dispatched Fiber Overview to Celery worker.")
-    except Exception as celery_err:
-        logger.warning(f"[{job_id}] Celery unavailable ({celery_err}). Falling back to local thread pool executor.")
-        import asyncio
-        from app.workers.pipeline import run_fiber_overview_pipeline
-        
-        loop = asyncio.get_running_loop()
-        pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
-        from app.core.store import InMemoryJobStore
-        _stub: dict[str, dict] = {job_id: dict(job_record)}
-        
-        async def _run_and_sync():
-            try:
-                await asyncio.wait_for(
-                    loop.run_in_executor(
-                        pipeline_pool,
-                        run_fiber_overview_pipeline,
-                        job_id,
-                        _stub,
-                        settings,
-                        None
-                    ),
-                    timeout=settings.JOB_TIMEOUT_SECONDS,
-                )
-                await store.set(job_id, _stub[job_id])
-            except asyncio.TimeoutError:
-                await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
-        asyncio.ensure_future(_run_and_sync())
+    # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
+    _dispatched = False
+    if settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
+        try:
+            resp = requests.post(
+                f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/run",
+                headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}", "Content-Type": "application/json"},
+                json={"input": _serialize_for_celery(job_record)},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            logger.info(f"[{job_id}] Dispatched Fiber Overview to RunPod Serverless.")
+            _dispatched = True
+        except Exception as _rp_err:
+            logger.warning(f"[{job_id}] RunPod dispatch failed ({_rp_err}). Falling back to Celery.")
+
+    if not _dispatched:
+        try:
+            run_fiber_overview_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+            logger.info(f"[{job_id}] Dispatched Fiber Overview to Celery worker.")
+        except Exception as celery_err:
+            logger.warning(f"[{job_id}] Celery unavailable ({celery_err}). Falling back to local thread pool executor.")
+            import asyncio
+            from app.workers.pipeline import run_fiber_overview_pipeline
+            loop = asyncio.get_running_loop()
+            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+            _stub: dict[str, dict] = {job_id: dict(job_record)}
+
+            async def _run_and_sync():
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(pipeline_pool, run_fiber_overview_pipeline, job_id, _stub, settings, None),
+                        timeout=settings.JOB_TIMEOUT_SECONDS,
+                    )
+                    await store.set(job_id, _stub[job_id])
+                except asyncio.TimeoutError:
+                    await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
+            asyncio.ensure_future(_run_and_sync())
     
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
 
@@ -324,31 +387,65 @@ async def submit_fiber_overview_before_job(
         "stage_times": {},
         "pipeline_type": "fiber_before",
     }
+    # Upload to Cloud
+    if "pdf_path" in locals() and pdf_path:
+        gcs_uri = upload_to_storage(pdf_path, f"jobs/{job_id}/map.pdf")
+        if gcs_uri:
+            job_record["pdf_path_gcs"] = f"jobs/{job_id}/map.pdf"
+            pdf_path.unlink(missing_ok=True)
+            
+    if "before_path" in locals() and before_path:
+        before_gcs = upload_to_storage(before_path, f"jobs/{job_id}/before.pdf")
+        if before_gcs:
+            job_record["before_path_gcs"] = f"jobs/{job_id}/before.pdf"
+            before_path.unlink(missing_ok=True)
+            
+    if "after_path" in locals() and after_path:
+        after_gcs = upload_to_storage(after_path, f"jobs/{job_id}/after.pdf")
+        if after_gcs:
+            job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
+            after_path.unlink(missing_ok=True)
+
     await store.set(job_id, job_record)
     
-    # Dispatch Celery task with local thread pool fallback
-    try:
-        run_fiber_before_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-        logger.info(f"[{job_id}] Dispatched Fiber Before to Celery worker.")
-    except Exception as celery_err:
-        logger.warning(f"[{job_id}] Celery unavailable ({celery_err}). Falling back to local threads.")
-        import asyncio
-        from app.services.fiber_before import run_fiber_before_pipeline
-        
-        loop = asyncio.get_running_loop()
-        pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
-        _stub: dict[str, dict] = {job_id: dict(job_record)}
-        
-        async def _run_and_sync():
-            try:
-                await asyncio.wait_for(
-                    loop.run_in_executor(pipeline_pool, run_fiber_before_pipeline, job_id, _stub, settings),
-                    timeout=settings.JOB_TIMEOUT_SECONDS,
-                )
-                await store.set(job_id, _stub[job_id])
-            except asyncio.TimeoutError:
-                await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
-        asyncio.ensure_future(_run_and_sync())
+    # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
+    _dispatched = False
+    if settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
+        try:
+            resp = requests.post(
+                f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/run",
+                headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}", "Content-Type": "application/json"},
+                json={"input": _serialize_for_celery(job_record)},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            logger.info(f"[{job_id}] Dispatched Fiber Before to RunPod Serverless.")
+            _dispatched = True
+        except Exception as _rp_err:
+            logger.warning(f"[{job_id}] RunPod dispatch failed ({_rp_err}). Falling back to Celery.")
+
+    if not _dispatched:
+        try:
+            run_fiber_before_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+            logger.info(f"[{job_id}] Dispatched Fiber Before to Celery worker.")
+        except Exception as celery_err:
+            logger.warning(f"[{job_id}] Celery unavailable ({celery_err}). Falling back to local threads.")
+            import asyncio
+            from app.services.fiber_before import run_fiber_before_pipeline
+            loop = asyncio.get_running_loop()
+            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+            _stub: dict[str, dict] = {job_id: dict(job_record)}
+
+            async def _run_and_sync():
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(pipeline_pool, run_fiber_before_pipeline, job_id, _stub, settings),
+                        timeout=settings.JOB_TIMEOUT_SECONDS,
+                    )
+                    await store.set(job_id, _stub[job_id])
+                except asyncio.TimeoutError:
+                    await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
+            asyncio.ensure_future(_run_and_sync())
     
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
 
@@ -425,26 +522,62 @@ async def submit_fiber_after_job(
         "pipeline_type": "fiber_after",
         "include_mux": include_mux,
     }
+    # Upload to Cloud
+    if "pdf_path" in locals() and pdf_path:
+        gcs_uri = upload_to_storage(pdf_path, f"jobs/{job_id}/map.pdf")
+        if gcs_uri:
+            job_record["pdf_path_gcs"] = f"jobs/{job_id}/map.pdf"
+            pdf_path.unlink(missing_ok=True)
+            
+    if "before_path" in locals() and before_path:
+        before_gcs = upload_to_storage(before_path, f"jobs/{job_id}/before.pdf")
+        if before_gcs:
+            job_record["before_path_gcs"] = f"jobs/{job_id}/before.pdf"
+            before_path.unlink(missing_ok=True)
+            
+    if "after_path" in locals() and after_path:
+        after_gcs = upload_to_storage(after_path, f"jobs/{job_id}/after.pdf")
+        if after_gcs:
+            job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
+            after_path.unlink(missing_ok=True)
+
     await store.set(job_id, job_record)
     
-    try:
-        run_fiber_after_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-        logger.info(f"[{job_id}] Dispatched Fiber After to Celery worker.")
-    except Exception as celery_err:
-        logger.warning(f"[{job_id}] Celery unavailable. Falling back to local thread pool.")
-        import asyncio
-        from app.services.fiber_after import run_fiber_after_pipeline
-        loop = asyncio.get_running_loop()
-        pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
-        _stub = {job_id: dict(job_record)}
-        
-        async def _run_async():
-             try:
-                 await loop.run_in_executor(pipeline_pool, run_fiber_after_pipeline, job_id, _stub, settings)
-                 await store.set(job_id, _stub[job_id])
-             except Exception as e:
-                 await store.update(job_id, {"status": JobStatus.FAILED, "error": str(e)})
-        asyncio.ensure_future(_run_async())
+    # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
+    _dispatched = False
+    if settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
+        try:
+            resp = requests.post(
+                f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/run",
+                headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}", "Content-Type": "application/json"},
+                json={"input": _serialize_for_celery(job_record)},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            logger.info(f"[{job_id}] Dispatched Fiber After to RunPod Serverless.")
+            _dispatched = True
+        except Exception as _rp_err:
+            logger.warning(f"[{job_id}] RunPod dispatch failed ({_rp_err}). Falling back to Celery.")
+
+    if not _dispatched:
+        try:
+            run_fiber_after_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+            logger.info(f"[{job_id}] Dispatched Fiber After to Celery worker.")
+        except Exception as celery_err:
+            logger.warning(f"[{job_id}] Celery unavailable. Falling back to local thread pool.")
+            import asyncio
+            from app.services.fiber_after import run_fiber_after_pipeline
+            loop = asyncio.get_running_loop()
+            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+            _stub = {job_id: dict(job_record)}
+
+            async def _run_async():
+                try:
+                    await loop.run_in_executor(pipeline_pool, run_fiber_after_pipeline, job_id, _stub, settings)
+                    await store.set(job_id, _stub[job_id])
+                except Exception as e:
+                    await store.update(job_id, {"status": JobStatus.FAILED, "error": str(e)})
+            asyncio.ensure_future(_run_async())
 
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
 
@@ -544,56 +677,78 @@ async def submit_job(
         "stage_times":  {},
         "pipeline_type": "coax",
     }
+    # Upload to Cloud
+    if "pdf_path" in locals() and pdf_path:
+        gcs_uri = upload_to_storage(pdf_path, f"jobs/{job_id}/map.pdf")
+        if gcs_uri:
+            job_record["pdf_path_gcs"] = f"jobs/{job_id}/map.pdf"
+            pdf_path.unlink(missing_ok=True)
+            
+    if "before_path" in locals() and before_path:
+        before_gcs = upload_to_storage(before_path, f"jobs/{job_id}/before.pdf")
+        if before_gcs:
+            job_record["before_path_gcs"] = f"jobs/{job_id}/before.pdf"
+            before_path.unlink(missing_ok=True)
+            
+    if "after_path" in locals() and after_path:
+        after_gcs = upload_to_storage(after_path, f"jobs/{job_id}/after.pdf")
+        if after_gcs:
+            job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
+            after_path.unlink(missing_ok=True)
+
     await store.set(job_id, job_record)
 
     logger.info(f"[{job_id}] Job persisted to Redis at {dpi} DPI.")
 
-    # ── Dispatch to Celery worker (Batch 3) ──────────────────────────
-    # If Redis / Celery is unavailable, fall back to thread pool executor
-    try:
-        from app.workers.tasks import run_pipeline_task
-        run_pipeline_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-        logger.info(f"[{job_id}] Dispatched to Celery worker.")
-    except Exception as celery_err:
-        logger.warning(
-            f"[{job_id}] Celery unavailable ({celery_err}). "
-            "Falling back to local thread pool executor."
-        )
-        import asyncio
-        from app.workers.pipeline import run_pipeline_sync
+    # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
+    _dispatched = False
+    if settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
+        try:
+            resp = requests.post(
+                f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/run",
+                headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}", "Content-Type": "application/json"},
+                json={"input": _serialize_for_celery(job_record)},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            logger.info(f"[{job_id}] Dispatched to RunPod Serverless.")
+            _dispatched = True
+        except Exception as _rp_err:
+            logger.warning(f"[{job_id}] RunPod dispatch failed ({_rp_err}). Falling back to Celery.")
 
-        detector = getattr(request.app.state, "detector", None)
-        loop = asyncio.get_running_loop()
-        pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+    if not _dispatched:
+        try:
+            from app.workers.tasks import run_pipeline_task
+            run_pipeline_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+            logger.info(f"[{job_id}] Dispatched to Celery worker.")
+        except Exception as celery_err:
+            logger.warning(
+                f"[{job_id}] Celery unavailable ({celery_err}). "
+                "Falling back to local thread pool executor."
+            )
+            import asyncio
+            from app.workers.pipeline import run_pipeline_sync
+            detector = getattr(request.app.state, "detector", None)
+            loop = asyncio.get_running_loop()
+            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+            _stub: dict[str, dict] = {job_id: dict(job_record)}
 
-        # Build an in-memory stub so run_pipeline_sync can update job state
-        # and mirror those updates back to Redis
-        from app.core.store import InMemoryJobStore
-        _stub: dict[str, dict] = {job_id: dict(job_record)}
-
-        async def _run_and_sync():
-            try:
-                await asyncio.wait_for(
-                    loop.run_in_executor(
-                        pipeline_pool,
-                        run_pipeline_sync,
-                        job_id,
-                        _stub,
-                        settings,
-                        detector,
-                    ),
-                    timeout=settings.JOB_TIMEOUT_SECONDS,
-                )
-                # Mirror final state to Redis
-                await store.set(job_id, _stub[job_id])
-            except asyncio.TimeoutError:
-                await store.update(job_id, {
-                    "status":  JobStatus.FAILED,
-                    "message": f"Job timed out after {settings.JOB_TIMEOUT_SECONDS}s.",
-                    "error":   "TimeoutError",
-                })
-
-        asyncio.ensure_future(_run_and_sync())
+            async def _run_and_sync():
+                try:
+                    await asyncio.wait_for(
+                        loop.run_in_executor(
+                            pipeline_pool, run_pipeline_sync, job_id, _stub, settings, detector,
+                        ),
+                        timeout=settings.JOB_TIMEOUT_SECONDS,
+                    )
+                    await store.set(job_id, _stub[job_id])
+                except asyncio.TimeoutError:
+                    await store.update(job_id, {
+                        "status":  JobStatus.FAILED,
+                        "message": f"Job timed out after {settings.JOB_TIMEOUT_SECONDS}s.",
+                        "error":   "TimeoutError",
+                    })
+            asyncio.ensure_future(_run_and_sync())
 
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
 
@@ -751,6 +906,8 @@ async def download_result(
         )
 
     report_path = settings.BASE_DIR / job["report_path"]
+    if job.get("report_path_gcs"):
+        download_from_storage(job["report_path_gcs"], report_path)
     if not report_path.exists():
         raise HTTPException(status_code=404, detail="Report file not found on disk.")
 

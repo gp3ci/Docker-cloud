@@ -1,7 +1,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Multi-Stage Dockerfile for Telecom Vision API
+# Multi-Stage Dockerfile for Telecom Vision - RunPod Serverless Worker
 # Stage 1 (builder): installs Python deps into a clean venv
-# Stage 2 (runtime): copies only the venv + app code — no build tools in prod
+# Stage 2 (runtime): copies venv + app code + model weights
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
@@ -46,19 +46,24 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY app/ ./app/
 COPY runpod_handler.py ./
 
-# Storage directories (mounted as volumes in production)
+# **CRITICAL DIFFERENCE FOR RUNPOD SERVERLESS**
+# RunPod Serverless containers cannot easily mount persistent network volumes
+# for rapid scale-to-zero boots. We must bake the model weights directly into the image.
+COPY model_weights/ ./model_weights/
+
+# Storage directories
 # We also create .EasyOCR so the non-root 'appuser' can download AI models at runtime
-RUN mkdir -p /app/storage/uploads /app/storage/outputs /app/model_weights /app/.EasyOCR \
+RUN mkdir -p /app/storage/uploads /app/storage/outputs /app/.EasyOCR \
     && chown -R appuser:appuser /app
 
 USER appuser
 
-# FastAPI/Uvicorn defaults
+# Python environment settings
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+# Expose RunPod default internal port
 EXPOSE 8000
 
-
-# Uvicorn with 4 workers; tune --workers based on CPU count
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+# Start the RunPod Serverless handler (instead of Uvicorn)
+CMD ["python", "runpod_handler.py"]
