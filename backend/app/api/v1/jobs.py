@@ -49,10 +49,17 @@ def _get_store(request: Request):
     return request.app.state.job_store
 
 
-from app.workers.tasks import (
-    run_pipeline_task, run_fiber_overview_task, run_fiber_before_task, 
-    run_coax_before_task, run_fiber_after_task
-)
+try:
+    from app.workers.tasks import (
+        run_pipeline_task, run_fiber_overview_task, run_fiber_before_task, 
+        run_coax_before_task, run_fiber_after_task
+    )
+except ImportError:
+    run_pipeline_task = None
+    run_fiber_overview_task = None
+    run_fiber_before_task = None
+    run_coax_before_task = None
+    run_fiber_after_task = None
 
 
 # ─────────────────────────────────────────────
@@ -162,7 +169,10 @@ async def submit_coax_before_job(
 
     if not _dispatched:
         try:
-            run_coax_before_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+            if run_coax_before_task:
+                run_coax_before_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+            else:
+                raise ImportError("Celery tasks not available (missing ML dependencies).")
         except Exception as celery_err:
             import asyncio
             from app.services.coax_before import run_coax_before_pipeline
@@ -295,8 +305,11 @@ async def submit_fiber_overview_job(
 
     if not _dispatched:
         try:
-            run_fiber_overview_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-            logger.info(f"[{job_id}] Dispatched Fiber Overview to Celery worker.")
+            if run_fiber_overview_task:
+                run_fiber_overview_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+                logger.info(f"[{job_id}] Dispatched Fiber Overview to Celery worker.")
+            else:
+                raise ImportError("Celery tasks not available.")
         except Exception as celery_err:
             logger.warning(f"[{job_id}] Celery unavailable ({celery_err}). Falling back to local thread pool executor.")
             import asyncio
@@ -426,8 +439,11 @@ async def submit_fiber_overview_before_job(
 
     if not _dispatched:
         try:
-            run_fiber_before_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-            logger.info(f"[{job_id}] Dispatched Fiber Before to Celery worker.")
+            if run_fiber_before_task:
+                run_fiber_before_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+                logger.info(f"[{job_id}] Dispatched Fiber Before to Celery worker.")
+            else:
+                raise ImportError("Celery tasks not available.")
         except Exception as celery_err:
             logger.warning(f"[{job_id}] Celery unavailable ({celery_err}). Falling back to local threads.")
             import asyncio
@@ -561,8 +577,11 @@ async def submit_fiber_after_job(
 
     if not _dispatched:
         try:
-            run_fiber_after_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-            logger.info(f"[{job_id}] Dispatched Fiber After to Celery worker.")
+            if run_fiber_after_task:
+                run_fiber_after_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+                logger.info(f"[{job_id}] Dispatched Fiber After to Celery worker.")
+            else:
+                raise ImportError("Celery tasks not available.")
         except Exception as celery_err:
             logger.warning(f"[{job_id}] Celery unavailable. Falling back to local thread pool.")
             import asyncio
@@ -718,9 +737,11 @@ async def submit_job(
 
     if not _dispatched:
         try:
-            from app.workers.tasks import run_pipeline_task
-            run_pipeline_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-            logger.info(f"[{job_id}] Dispatched to Celery worker.")
+            if run_pipeline_task:
+                run_pipeline_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+                logger.info(f"[{job_id}] Dispatched to Celery worker.")
+            else:
+                raise ImportError("Celery tasks not available.")
         except Exception as celery_err:
             logger.warning(
                 f"[{job_id}] Celery unavailable ({celery_err}). "
