@@ -109,6 +109,7 @@ async def submit_coax_before_job(
             shutil.copyfileobj(survey_image.file, f)
 
     job_record = {
+        "job_id": job_id,
         "status": JobStatus.QUEUED,
         "progress": 0.0,
         "message": "Job queued. Waiting for Celery worker.",
@@ -161,6 +162,10 @@ async def submit_coax_before_job(
                 json={"input": _serialize_for_celery(job_record)},
                 timeout=10,
             )
+            resp.raise_for_status()
+            rp_data = resp.json()
+            if rp_data and rp_data.get("id"):
+                await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
             resp.raise_for_status()
             logger.info(f"[{job_id}] Dispatched to RunPod Serverless.")
             _dispatched = True
@@ -242,6 +247,7 @@ async def submit_fiber_overview_job(
             shutil.copyfileobj(survey_image.file, f)
             
     job_record = {
+        "job_id": job_id,
         "status": JobStatus.QUEUED,
         "progress": 0.0,
         "message": "Job queued. Waiting for Celery worker.",
@@ -297,6 +303,10 @@ async def submit_fiber_overview_job(
                 json={"input": _serialize_for_celery(job_record)},
                 timeout=10,
             )
+            resp.raise_for_status()
+            rp_data = resp.json()
+            if rp_data and rp_data.get("id"):
+                await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
             resp.raise_for_status()
             logger.info(f"[{job_id}] Dispatched Fiber Overview to RunPod Serverless.")
             _dispatched = True
@@ -379,6 +389,7 @@ async def submit_fiber_overview_before_job(
             shutil.copyfileobj(survey_image.file, f)
             
     job_record = {
+        "job_id": job_id,
         "status": JobStatus.QUEUED,
         "progress": 0.0,
         "message": "Job queued. Waiting for Celery worker.",
@@ -431,6 +442,10 @@ async def submit_fiber_overview_before_job(
                 json={"input": _serialize_for_celery(job_record)},
                 timeout=10,
             )
+            resp.raise_for_status()
+            rp_data = resp.json()
+            if rp_data and rp_data.get("id"):
+                await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
             resp.raise_for_status()
             logger.info(f"[{job_id}] Dispatched Fiber Before to RunPod Serverless.")
             _dispatched = True
@@ -515,6 +530,7 @@ async def submit_fiber_after_job(
             shutil.copyfileobj(survey_image.file, f)
             
     job_record = {
+        "job_id": job_id,
         "status": JobStatus.QUEUED,
         "progress": 0.0,
         "message": "Job queued. Waiting for Celery worker.",
@@ -569,6 +585,10 @@ async def submit_fiber_after_job(
                 json={"input": _serialize_for_celery(job_record)},
                 timeout=10,
             )
+            resp.raise_for_status()
+            rp_data = resp.json()
+            if rp_data and rp_data.get("id"):
+                await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
             resp.raise_for_status()
             logger.info(f"[{job_id}] Dispatched Fiber After to RunPod Serverless.")
             _dispatched = True
@@ -670,6 +690,7 @@ async def submit_job(
     # ── Persist job record to Redis (Batch 3) ────────────────────────
     store = _get_store(request)
     job_record = {
+        "job_id": job_id,
         "status":       JobStatus.QUEUED,
         "progress":     0.0,
         "message":      "Job queued. Waiting for Celery worker.",
@@ -729,6 +750,10 @@ async def submit_job(
                 json={"input": _serialize_for_celery(job_record)},
                 timeout=10,
             )
+            resp.raise_for_status()
+            rp_data = resp.json()
+            if rp_data and rp_data.get("id"):
+                await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
             resp.raise_for_status()
             logger.info(f"[{job_id}] Dispatched to RunPod Serverless.")
             _dispatched = True
@@ -859,6 +884,20 @@ async def perform_job_action(
             "message": "Job aborted by user.",
             "progress": 0.0
         })
+        
+        rp_job_id = job.get("runpod_job_id")
+        if rp_job_id and settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
+            try:
+                import requests
+                requests.post(
+                    f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/cancel/{rp_job_id}",
+                    headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}"},
+                    timeout=5,
+                )
+                logger.info(f"Successfully cancelled RunPod job {rp_job_id}")
+            except Exception as e:
+                logger.warning(f"Failed to cancel RunPod job {rp_job_id}: {e}")
+
         return {"message": "Job aborted and workspace cleaned."}
 
     if body.action.upper() == "PROCEED":
