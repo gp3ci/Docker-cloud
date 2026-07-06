@@ -31,7 +31,7 @@ class SyncRedisDict(dict):
 
     def _sync(self):
         try:
-            self.redis_client.set(self.job_id, json.dumps(self))
+            self.redis_client.set(f"telecom_job:{self.job_id}", json.dumps(self))
         except Exception as e:
             logger.error(f"Failed to sync job state to Redis: {e}")
 
