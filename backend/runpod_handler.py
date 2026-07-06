@@ -1,6 +1,8 @@
 import runpod
 import traceback
 import logging
+import json
+import redis
 
 from app.core.config import get_settings
 from app.workers.tasks import _get_detector, _get_overview_processor
@@ -11,6 +13,27 @@ from app.services.fiber_before import run_fiber_before_pipeline
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+class SyncRedisDict(dict):
+    """A dictionary that automatically syncs its contents back to Upstash Redis when updated."""
+    def __init__(self, redis_client, job_id, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.redis_client = redis_client
+        self.job_id = job_id
+
+    def update(self, *args, **kwargs):
+        super().update(*args, **kwargs)
+        self._sync()
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self._sync()
+
+    def _sync(self):
+        try:
+            self.redis_client.set(self.job_id, json.dumps(self))
+        except Exception as e:
+            logger.error(f"Failed to sync job state to Redis: {e}")
 
 def handler(event):
     """
@@ -27,9 +50,10 @@ def handler(event):
         
         logger.info(f"Received RunPod job {job_id} for pipeline: {pipeline_type}")
         
-        # We pass a simple dict acting as job_store. 
-        # The pipeline updates it locally. When it finishes, the result is in job_store[job_id].
-        job_store = {job_id: job_record}
+        # Create a Redis client and wrap the job_record in our auto-syncing dictionary
+        redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+        job_record_dict = SyncRedisDict(redis_client, job_id, job_record)
+        job_store = {job_id: job_record_dict}
         
         if pipeline_type == "coax":
             run_pipeline_sync(job_id, job_store, settings, detector=_get_detector(settings))
