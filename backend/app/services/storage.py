@@ -1,7 +1,9 @@
 import os
+import json
 import logging
 from pathlib import Path
 from google.cloud import storage
+from google.oauth2 import service_account
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +14,26 @@ def get_gcs_client():
     if not GCS_BUCKET_NAME:
         return None
     try:
+        # Check all common credential env var names (order of preference)
+        creds_json = (
+            os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON") or  # used in Render & RunPod
+            os.getenv("GOOGLE_CREDENTIALS_JSON") or              # alternative name
+            None
+        )
+
+        # Also handle GOOGLE_APPLICATION_CREDENTIALS if it contains JSON content
+        # (instead of a file path)
+        if not creds_json:
+            app_creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+            if app_creds.strip().startswith("{"):
+                creds_json = app_creds
+
+        if creds_json:
+            creds_dict = json.loads(creds_json)
+            credentials = service_account.Credentials.from_service_account_info(creds_dict)
+            return storage.Client(credentials=credentials)
+
+        # Fallback: file-based credentials
         return storage.Client()
     except Exception as e:
         logger.warning(f"Failed to initialize GCS Client: {e}")
