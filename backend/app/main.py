@@ -37,9 +37,14 @@ async def lifespan(app: FastAPI):
     for url in redis_urls:
         try:
             logger.info(f"Attempting to connect to Redis at {url}...")
-            redis_client = aioredis.from_url(url, encoding="utf-8", decode_responses=True)
+            redis_client = aioredis.from_url(
+                url,
+                encoding="utf-8",
+                decode_responses=True,
+                ssl_cert_reqs=None,  # Required for Upstash rediss:// SSL connections
+            )
             # Quick ping to check if Redis is actually up
-            await asyncio.wait_for(redis_client.ping(), timeout=1.0)
+            await asyncio.wait_for(redis_client.ping(), timeout=3.0)
             app.state.job_store = RedisJobStore(redis_client)
             app.state.job_store_type = "redis"
             logger.info(f"🚀 [SUCCESS] Connected to Redis at {url}")
