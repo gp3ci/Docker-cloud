@@ -125,6 +125,17 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 logger.info(f"[{job_id}] Saved fallback sample tile pair (1)")
                 sample_indices = [1]
 
+            # ── RunPod Stateless Sync: Upload to GCS ──
+            from app.services.storage import upload_to_storage
+            _update(JobStatus.ALIGNING, 14.0, "Uploading intermediate state to GCS...")
+            upload_to_storage(out / "aligned_after.png", f"jobs/{job_id}/aligned_after.png")
+            upload_to_storage(out / "aligned_before.png", f"jobs/{job_id}/aligned_before.png")
+            upload_to_storage(out / "W_inv.npy", f"jobs/{job_id}/W_inv.npy")
+            
+            for s_num in sample_indices:
+                upload_to_storage(td_before / f"before_{s_num}.png", f"jobs/{job_id}/tiles/before/before_{s_num}.png")
+                upload_to_storage(td_after / f"after_{s_num}.png", f"jobs/{job_id}/tiles/after/after_{s_num}.png")
+
             job_store[job_id].update({
                 "status":       JobStatus.AWAITING_DPI_CONFIRM,
                 "progress":     15.0,
@@ -137,9 +148,22 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
         # ── Phase 2: Detection + Reporting ───────────────────────────────────
         if job.get("status") == JobStatus.PROCESSING:
             _update(JobStatus.PROCESSING, 20.0, "AI analysis running...")
-            fa   = cv2.imread(str(out / "aligned_after.png"))
-            fb   = cv2.imread(str(out / "aligned_before.png"))
-            W_inv = np.load(str(out / "W_inv.npy"))
+            fa_path = out / "aligned_after.png"
+            fb_path = out / "aligned_before.png"
+            winv_path = out / "W_inv.npy"
+            
+            # ── RunPod Stateless Sync: Download from GCS ──
+            from app.services.storage import download_from_storage
+            if not fa_path.exists():
+                download_from_storage(f"jobs/{job_id}/aligned_after.png", fa_path)
+            if not fb_path.exists():
+                download_from_storage(f"jobs/{job_id}/aligned_before.png", fb_path)
+            if not winv_path.exists():
+                download_from_storage(f"jobs/{job_id}/W_inv.npy", winv_path)
+                
+            fa   = cv2.imread(str(fa_path))
+            fb   = cv2.imread(str(fb_path))
+            W_inv = np.load(str(winv_path))
             re   = RuleEngine()
             callout_records: list[dict] = []
             tile_offsets:    dict       = {}
@@ -203,8 +227,14 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                     td_after  = out / "tiles" / "after"
                     td_before.mkdir(parents=True, exist_ok=True)
                     td_after.mkdir(parents=True, exist_ok=True)
-                    cv2.imwrite(str(td_before / f"before_{t_idx}.png"), b_tile)
-                    cv2.imwrite(str(td_after  / f"after_{t_idx}.png"),  a_tile)
+                    b_path = td_before / f"before_{t_idx}.png"
+                    a_path = td_after / f"after_{t_idx}.png"
+                    cv2.imwrite(str(b_path), b_tile)
+                    cv2.imwrite(str(a_path),  a_tile)
+                    
+                    from app.services.storage import upload_to_storage
+                    upload_to_storage(b_path, f"jobs/{job_id}/tiles/before/before_{t_idx}.png")
+                    upload_to_storage(a_path, f"jobs/{job_id}/tiles/after/after_{t_idx}.png")
 
                 # Periodic memory cleanup to prevent OOM
                 if tile_count % 10 == 0:
@@ -235,8 +265,31 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
 
         if job.get("status") == JobStatus.REPORTING:
             _update(JobStatus.REPORTING, 85.0, "Generating vector report...")
-            fa   = cv2.imread(str(out / "aligned_after.png"))
-            W_inv = np.load(str(out / "W_inv.npy"))
+            fa_path = out / "aligned_after.png"
+            winv_path = out / "W_inv.npy"
+            
+            # ── RunPod Stateless Sync: Download from GCS ──
+            from app.services.storage import download_from_storage
+            if not fa_path.exists():
+                download_from_storage(f"jobs/{job_id}/aligned_after.png", fa_path)
+            if not winv_path.exists():
+                download_from_storage(f"jobs/{job_id}/W_inv.npy", winv_path)
+            
+            fa   = cv2.imread(str(fa_path))
+            W_inv = np.load(str(winv_path))
+            
+            # Download Survey Image from GCS if provided
+            survey_image_path = job.get("survey_image_path")
+            if survey_image_path:
+                s_path = Path(survey_image_path)
+                if not s_path.exists():
+                    survey_gcs = job.get("survey_image_path_gcs")
+                    if survey_gcs:
+                        try:
+                            s_path.parent.mkdir(parents=True, exist_ok=True)
+                            download_from_storage(survey_gcs, s_path)
+                        except Exception:
+                            logger.warning(f"Failed to download survey image from {survey_gcs}")
             
             # Apply user overrides
             callout_records = job.get("all_callouts", [])

@@ -150,6 +150,12 @@ async def submit_coax_before_job(
             job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
             after_path.unlink(missing_ok=True)
 
+    if survey_img_path:
+        survey_gcs = upload_to_storage(survey_img_path, f"jobs/{job_id}/{survey_img_path.name}")
+        if survey_gcs:
+            job_record["survey_image_path_gcs"] = f"jobs/{job_id}/{survey_img_path.name}"
+            # Do NOT unlink survey image since Render API might serve it if requested locally
+
     await store.set(job_id, job_record)
 
     # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
@@ -291,6 +297,11 @@ async def submit_fiber_overview_job(
             job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
             after_path.unlink(missing_ok=True)
 
+    if survey_img_path:
+        survey_gcs = upload_to_storage(survey_img_path, f"jobs/{job_id}/{survey_img_path.name}")
+        if survey_gcs:
+            job_record["survey_image_path_gcs"] = f"jobs/{job_id}/{survey_img_path.name}"
+
     await store.set(job_id, job_record)
     # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
     _dispatched = False
@@ -428,6 +439,11 @@ async def submit_fiber_overview_before_job(
         if after_gcs:
             job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
             after_path.unlink(missing_ok=True)
+
+    if survey_img_path:
+        survey_gcs = upload_to_storage(survey_img_path, f"jobs/{job_id}/{survey_img_path.name}")
+        if survey_gcs:
+            job_record["survey_image_path_gcs"] = f"jobs/{job_id}/{survey_img_path.name}"
 
     await store.set(job_id, job_record)
     
@@ -571,6 +587,11 @@ async def submit_fiber_after_job(
         if after_gcs:
             job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
             after_path.unlink(missing_ok=True)
+
+    if survey_img_path:
+        survey_gcs = upload_to_storage(survey_img_path, f"jobs/{job_id}/{survey_img_path.name}")
+        if survey_gcs:
+            job_record["survey_image_path_gcs"] = f"jobs/{job_id}/{survey_img_path.name}"
 
     await store.set(job_id, job_record)
     
@@ -734,6 +755,11 @@ async def submit_job(
         if after_gcs:
             job_record["after_path_gcs"] = f"jobs/{job_id}/after.pdf"
             after_path.unlink(missing_ok=True)
+
+    if survey_image_path:
+        survey_gcs = upload_to_storage(Path(survey_image_path), f"jobs/{job_id}/survey_info.png")
+        if survey_gcs:
+            job_record["survey_image_path_gcs"] = f"jobs/{job_id}/survey_info.png"
 
     await store.set(job_id, job_record)
 
@@ -916,32 +942,53 @@ async def perform_job_action(
             raise HTTPException(status_code=400, detail=f"Cannot PROCEED from current status: {current_status}")
 
         await store.update(job_id, {"status": next_status, "message": "Resuming pipeline..."})
+        job_record = await store.get(job_id)
         
         # Trigger pipeline again based on pipeline_type
         p_type = job.get("pipeline_type", "coax")
         
-        try:
-            if p_type == "fiber_after":
-                run_fiber_after_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(await store.get(job_id))})
-            else:
-                run_pipeline_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(await store.get(job_id))})
-        except Exception:
-            # Local fallback (mirroring submit logic)
-            import asyncio
-            from app.workers.pipeline import run_pipeline_sync
-            from app.services.fiber_after import run_fiber_after_pipeline
-            loop = asyncio.get_running_loop()
-            pipeline_pool = request.app.state.pipeline_pool
-            
-            async def _resume_async():
-                _stub = {job_id: await store.get(job_id)}
+        # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
+        _dispatched = False
+        if settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
+            try:
+                resp = requests.post(
+                    f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/run",
+                    headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}", "Content-Type": "application/json"},
+                    json={"input": _serialize_for_celery(job_record)},
+                    timeout=10,
+                )
+                resp.raise_for_status()
+                rp_data = resp.json()
+                if rp_data and rp_data.get("id"):
+                    await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
+                logger.info(f"[{job_id}] Resumed job dispatched to RunPod Serverless.")
+                _dispatched = True
+            except Exception as _rp_err:
+                logger.warning(f"[{job_id}] RunPod resume dispatch failed ({_rp_err}). Falling back to Celery.")
+
+        if not _dispatched:
+            try:
                 if p_type == "fiber_after":
-                    await loop.run_in_executor(pipeline_pool, run_fiber_after_pipeline, job_id, _stub, settings)
+                    run_fiber_after_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
                 else:
-                    await loop.run_in_executor(pipeline_pool, run_pipeline_sync, job_id, _stub, settings, request.app.state.detector)
-                await store.set(job_id, _stub[job_id])
-            
-            asyncio.ensure_future(_resume_async())
+                    run_pipeline_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+            except Exception:
+                # Local fallback (mirroring submit logic)
+                import asyncio
+                from app.workers.pipeline import run_pipeline_sync
+                from app.services.fiber_after import run_fiber_after_pipeline
+                loop = asyncio.get_running_loop()
+                pipeline_pool = request.app.state.pipeline_pool
+                
+                async def _resume_async():
+                    _stub = {job_id: await store.get(job_id)}
+                    if p_type == "fiber_after":
+                        await loop.run_in_executor(pipeline_pool, run_fiber_after_pipeline, job_id, _stub, settings)
+                    else:
+                        await loop.run_in_executor(pipeline_pool, run_pipeline_sync, job_id, _stub, settings, request.app.state.detector)
+                    await store.set(job_id, _stub[job_id])
+                
+                asyncio.ensure_future(_resume_async())
 
         return {"message": f"Job resuming with status {next_status}"}
 

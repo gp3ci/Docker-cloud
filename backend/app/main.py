@@ -6,9 +6,9 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,25 @@ def create_app() -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     app.include_router(health.router, prefix=settings.API_PREFIX)
     app.include_router(jobs.router, prefix=settings.API_PREFIX)
-    app.mount("/outputs", StaticFiles(directory=str(settings.OUTPUTS_DIR)), name="outputs")
+    # app.mount("/outputs", StaticFiles(directory=str(settings.OUTPUTS_DIR)), name="outputs")
+    
+    from app.services.storage import download_from_storage
+    @app.get("/outputs/{file_path:path}", summary="Serve or proxy intermediate files")
+    async def serve_outputs(file_path: str):
+        local_path = settings.OUTPUTS_DIR / file_path
+        if local_path.exists():
+            return FileResponse(local_path)
+            
+        # Try fetching from GCS (RunPod stateless proxy)
+        gcs_key = f"jobs/{file_path}"
+        try:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            if download_from_storage(gcs_key, local_path):
+                return FileResponse(local_path)
+        except Exception as e:
+            logger.error(f"Failed to fetch {gcs_key} from GCS: {e}")
+            
+        raise HTTPException(status_code=404, detail="File not found on disk or GCS")
     return app
 
 app = create_app()
