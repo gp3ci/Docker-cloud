@@ -266,8 +266,41 @@ def run_coax_before_pipeline(
         map_type = title_box.get("map_type", "BEFORE PRINT")
 
         output_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
         job_store[job_id]["stage_times"] = {}
         t0 = time.perf_counter()
+
+        # ── Download from GCS if running on RunPod (file won't exist locally) ──
+        if not pdf_path.exists():
+            gcs_key = job.get("pdf_path_gcs") or job.get("before_path_gcs")
+            if gcs_key:
+                try:
+                    from app.services.storage import download_from_storage
+                    _update(JobStatus.PROCESSING, 5, "Downloading PDF from cloud storage...")
+                    download_from_storage(gcs_key, pdf_path)
+                    logger.info(f"[{job_id}] Downloaded PDF from GCS: {gcs_key}")
+                except Exception as dl_err:
+                    raise FileNotFoundError(
+                        f"PDF not found locally and GCS download failed: {dl_err}"
+                    )
+            else:
+                raise FileNotFoundError(
+                    f"PDF not found at {pdf_path} and no GCS path available."
+                )
+
+        # ── Download survey image from GCS if needed ──
+        if survey_image_path:
+            survey_path_obj = Path(survey_image_path)
+            if not survey_path_obj.exists():
+                survey_gcs = job.get("survey_image_path_gcs")
+                if survey_gcs:
+                    try:
+                        from app.services.storage import download_from_storage
+                        survey_path_obj.parent.mkdir(parents=True, exist_ok=True)
+                        download_from_storage(survey_gcs, survey_path_obj)
+                        logger.info(f"[{job_id}] Downloaded survey image from GCS.")
+                    except Exception:
+                        survey_image_path = None  # proceed without it
 
         _update(JobStatus.PROCESSING, 20, "Analysing map corners...")
         report_path = output_dir / "report.pdf"
@@ -287,6 +320,16 @@ def run_coax_before_pipeline(
         total_ms = (time.perf_counter() - job_start) * 1000
         job_store[job_id]["stage_times"]["total_ms"] = round(total_ms, 1)
 
+        # ── Upload report to GCS so Render can serve it ──
+        report_gcs_key = f"jobs/{job_id}/report.pdf"
+        try:
+            from app.services.storage import upload_to_storage
+            upload_to_storage(report_path, report_gcs_key)
+            job_store[job_id]["report_path_gcs"] = report_gcs_key
+            logger.info(f"[{job_id}] Uploaded report to GCS: {report_gcs_key}")
+        except Exception as up_err:
+            logger.warning(f"[{job_id}] GCS report upload failed: {up_err}")
+
         job_store[job_id].update({
             "status": JobStatus.COMPLETED,
             "progress": 100.0,
@@ -302,3 +345,4 @@ def run_coax_before_pipeline(
             "message": "Coax Before pipeline encountered an error.",
             "error": str(exc),
         })
+

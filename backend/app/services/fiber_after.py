@@ -222,6 +222,22 @@ def run_fiber_after_pipeline(job_id: str, store: Any, settings: Settings):
             _sync_update({"status": JobStatus.PROCESSING, "progress": 10.0, "message": "Rendering map and extracting text..."})
             
             pdf_path = job["pdf_path"]
+
+            # ── Download from GCS if running on RunPod (file won't exist locally) ──
+            if not Path(pdf_path).exists():
+                gcs_key = job.get("pdf_path_gcs") or job.get("before_path_gcs")
+                if gcs_key:
+                    try:
+                        from app.services.storage import download_from_storage
+                        _sync_update({"progress": 5.0, "message": "Downloading PDF from cloud storage..."})
+                        Path(pdf_path).parent.mkdir(parents=True, exist_ok=True)
+                        download_from_storage(gcs_key, Path(pdf_path))
+                        logger.info(f"[{job_id}] Downloaded PDF from GCS: {gcs_key}")
+                    except Exception as dl_err:
+                        raise FileNotFoundError(f"PDF not found locally and GCS download failed: {dl_err}")
+                else:
+                    raise FileNotFoundError(f"PDF not found at {pdf_path} and no GCS path available.")
+
             doc = fitz.open(pdf_path)
             page = doc[0]
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
@@ -383,6 +399,16 @@ def run_fiber_after_pipeline(job_id: str, store: Any, settings: Settings):
                 "callouts": final_callout_records,
                 "report_path": Path(report_path).relative_to(settings.BASE_DIR).as_posix()
             })
+
+            # ── Upload report to GCS so Render can serve it ──
+            report_gcs_key = f"jobs/{job_id}/report.pdf"
+            try:
+                from app.services.storage import upload_to_storage
+                upload_to_storage(report_path, report_gcs_key)
+                _sync_update({"report_path_gcs": report_gcs_key})
+                logger.info(f"[{job_id}] Uploaded report to GCS: {report_gcs_key}")
+            except Exception as up_err:
+                logger.warning(f"[{job_id}] GCS report upload failed: {up_err}")
 
     except Exception as e:
         import traceback

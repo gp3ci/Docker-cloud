@@ -166,7 +166,6 @@ async def submit_coax_before_job(
             rp_data = resp.json()
             if rp_data and rp_data.get("id"):
                 await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
-            resp.raise_for_status()
             logger.info(f"[{job_id}] Dispatched to RunPod Serverless.")
             _dispatched = True
         except Exception as _rp_err:
