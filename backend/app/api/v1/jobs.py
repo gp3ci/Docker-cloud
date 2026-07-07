@@ -941,7 +941,12 @@ async def perform_job_action(
         if not next_status:
             raise HTTPException(status_code=400, detail=f"Cannot PROCEED from current status: {current_status}")
 
-        await store.update(job_id, {"status": next_status, "message": "Resuming pipeline..."})
+        update_dict = {"status": next_status, "message": "Resuming pipeline..."}
+        if current_status == JobStatus.AWAITING_DPI_CONFIRM and body.dpi is not None:
+            update_dict["dpi"] = body.dpi
+            logger.info(f"[{job_id}] User overridden DPI to {body.dpi}")
+
+        await store.update(job_id, update_dict)
         job_record = await store.get(job_id)
         
         # Trigger pipeline again based on pipeline_type
@@ -975,17 +980,24 @@ async def perform_job_action(
             except Exception:
                 # Local fallback (mirroring submit logic)
                 import asyncio
-                from app.workers.pipeline import run_pipeline_sync
-                from app.services.fiber_after import run_fiber_after_pipeline
                 loop = asyncio.get_running_loop()
-                pipeline_pool = request.app.state.pipeline_pool
+                pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
                 
                 async def _resume_async():
+                    if not pipeline_pool:
+                        logger.error("No pipeline pool available for local fallback")
+                        return
+                        
                     _stub = {job_id: await store.get(job_id)}
+                    
                     if p_type == "fiber_after":
+                        from app.services.fiber_after import run_fiber_after_pipeline
                         await loop.run_in_executor(pipeline_pool, run_fiber_after_pipeline, job_id, _stub, settings)
                     else:
-                        await loop.run_in_executor(pipeline_pool, run_pipeline_sync, job_id, _stub, settings, request.app.state.detector)
+                        from app.workers.pipeline import run_pipeline_sync
+                        detector = getattr(request.app.state, "detector", None)
+                        await loop.run_in_executor(pipeline_pool, run_pipeline_sync, job_id, _stub, settings, detector)
+                        
                     await store.set(job_id, _stub[job_id])
                 
                 asyncio.ensure_future(_resume_async())

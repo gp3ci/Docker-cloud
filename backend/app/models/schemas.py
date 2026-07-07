@@ -90,4 +90,5 @@ class HealthResponse(BaseModel):
 
 class JobActionRequest(BaseModel):
     action: str = Field(..., description="Action to perform: 'PROCEED' or 'ABORT'")
+    dpi: Optional[int] = Field(None, description="DPI value for re-processing")
     overrides: Optional[list[dict]] = Field(None, description="Optional callout modifications (rename/remove)")
