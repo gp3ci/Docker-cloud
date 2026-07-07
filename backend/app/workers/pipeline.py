@@ -126,7 +126,6 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 sample_indices = [1]
 
             # ── RunPod Stateless Sync: Upload to GCS ──
-            from app.services.storage import upload_to_storage
             _update(JobStatus.ALIGNING, 14.0, "Uploading intermediate state to GCS...")
             upload_to_storage(out / "aligned_after.png", f"jobs/{job_id}/aligned_after.png")
             upload_to_storage(out / "aligned_before.png", f"jobs/{job_id}/aligned_before.png")
@@ -153,7 +152,6 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             winv_path = out / "W_inv.npy"
             
             # ── RunPod Stateless Sync: Download from GCS ──
-            from app.services.storage import download_from_storage
             if not fa_path.exists():
                 download_from_storage(f"jobs/{job_id}/aligned_after.png", fa_path)
             if not fb_path.exists():
@@ -232,7 +230,6 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                     cv2.imwrite(str(b_path), b_tile)
                     cv2.imwrite(str(a_path),  a_tile)
                     
-                    from app.services.storage import upload_to_storage
                     upload_to_storage(b_path, f"jobs/{job_id}/tiles/before/before_{t_idx}.png")
                     upload_to_storage(a_path, f"jobs/{job_id}/tiles/after/after_{t_idx}.png")
 
@@ -269,7 +266,6 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             winv_path = out / "W_inv.npy"
             
             # ── RunPod Stateless Sync: Download from GCS ──
-            from app.services.storage import download_from_storage
             if not fa_path.exists():
                 download_from_storage(f"jobs/{job_id}/aligned_after.png", fa_path)
             if not winv_path.exists():

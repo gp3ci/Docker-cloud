@@ -13,6 +13,7 @@ from ultralytics import YOLO
 from app.core.config import Settings
 from app.models.schemas import JobStatus
 from app.services.reporting import generate_vector_report
+from app.services.storage import download_from_storage, upload_to_storage
 
 logger = logging.getLogger(__name__)
 
@@ -228,7 +229,6 @@ def run_fiber_after_pipeline(job_id: str, store: Any, settings: Settings):
                 gcs_key = job.get("pdf_path_gcs") or job.get("before_path_gcs")
                 if gcs_key:
                     try:
-                        from app.services.storage import download_from_storage
                         _sync_update({"progress": 5.0, "message": "Downloading PDF from cloud storage..."})
                         Path(pdf_path).parent.mkdir(parents=True, exist_ok=True)
                         download_from_storage(gcs_key, Path(pdf_path))
@@ -403,7 +403,6 @@ def run_fiber_after_pipeline(job_id: str, store: Any, settings: Settings):
             # ── Upload report to GCS so Render can serve it ──
             report_gcs_key = f"jobs/{job_id}/report.pdf"
             try:
-                from app.services.storage import upload_to_storage
                 upload_to_storage(report_path, report_gcs_key)
                 _sync_update({"report_path_gcs": report_gcs_key})
                 logger.info(f"[{job_id}] Uploaded report to GCS: {report_gcs_key}")

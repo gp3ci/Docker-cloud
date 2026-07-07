@@ -16,6 +16,7 @@ import numpy as np
 
 from app.core.config import Settings
 from app.models.schemas import JobStatus
+from app.services.storage import download_from_storage, upload_to_storage
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +276,6 @@ def run_coax_before_pipeline(
             gcs_key = job.get("pdf_path_gcs") or job.get("before_path_gcs")
             if gcs_key:
                 try:
-                    from app.services.storage import download_from_storage
                     _update(JobStatus.PROCESSING, 5, "Downloading PDF from cloud storage...")
                     download_from_storage(gcs_key, pdf_path)
                     logger.info(f"[{job_id}] Downloaded PDF from GCS: {gcs_key}")
@@ -295,7 +295,6 @@ def run_coax_before_pipeline(
                 survey_gcs = job.get("survey_image_path_gcs")
                 if survey_gcs:
                     try:
-                        from app.services.storage import download_from_storage
                         survey_path_obj.parent.mkdir(parents=True, exist_ok=True)
                         download_from_storage(survey_gcs, survey_path_obj)
                         logger.info(f"[{job_id}] Downloaded survey image from GCS.")
@@ -323,7 +322,6 @@ def run_coax_before_pipeline(
         # ── Upload report to GCS so Render can serve it ──
         report_gcs_key = f"jobs/{job_id}/report.pdf"
         try:
-            from app.services.storage import upload_to_storage
             upload_to_storage(report_path, report_gcs_key)
             job_store[job_id]["report_path_gcs"] = report_gcs_key
             logger.info(f"[{job_id}] Uploaded report to GCS: {report_gcs_key}")
