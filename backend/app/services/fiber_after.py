@@ -373,6 +373,19 @@ def run_fiber_after_pipeline(job_id: str, store: Any, settings: Settings):
             # tile_offsets is a map from index -> (gx_start, gy_start)
             tile_offsets = {int(k): v for k, v in job.get("tile_offsets_fiber", {}).items()}
 
+            # ── Download survey image from GCS if needed ──
+            survey_image_path = job.get("survey_image_path")
+            if survey_image_path:
+                s_path = Path(survey_image_path)
+                if not s_path.exists():
+                    survey_gcs = job.get("survey_image_path_gcs")
+                    if survey_gcs:
+                        try:
+                            s_path.parent.mkdir(parents=True, exist_ok=True)
+                            download_from_storage(survey_gcs, s_path)
+                        except Exception:
+                            logger.warning(f"Failed to download survey image from {survey_gcs}")
+
             generate_vector_report(
                 after_pdf_path=pdf_path,
                 callout_records=final_callout_records,

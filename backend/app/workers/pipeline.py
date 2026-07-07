@@ -442,6 +442,19 @@ def run_fiber_overview_pipeline(job_id, job_store, settings, processor=None, **k
 
         _update(JobStatus.REPORTING, 80.0, "Rendering PDF report...")
 
+        # ── Download survey image from GCS if needed ──
+        survey_image_path = job.get("survey_image_path")
+        if survey_image_path:
+            s_path = Path(survey_image_path)
+            if not s_path.exists():
+                survey_gcs = job.get("survey_image_path_gcs")
+                if survey_gcs:
+                    try:
+                        s_path.parent.mkdir(parents=True, exist_ok=True)
+                        download_from_storage(survey_gcs, s_path)
+                    except Exception:
+                        logger.warning(f"Failed to download survey image from {survey_gcs}")
+
         report_path = out / "report.pdf"
         generate_final_report(
             pdf_path=pdf_path,
