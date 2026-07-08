@@ -610,7 +610,6 @@ async def submit_fiber_after_job(
             rp_data = resp.json()
             if rp_data and rp_data.get("id"):
                 await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
-            resp.raise_for_status()
             logger.info(f"[{job_id}] Dispatched Fiber After to RunPod Serverless.")
             _dispatched = True
         except Exception as _rp_err:
@@ -624,20 +623,13 @@ async def submit_fiber_after_job(
             else:
                 raise ImportError("Celery tasks not available.")
         except Exception as celery_err:
-            logger.warning(f"[{job_id}] Celery unavailable. Falling back to local thread pool.")
-            import asyncio
-            from app.services.fiber_after import run_fiber_after_pipeline
-            loop = asyncio.get_running_loop()
-            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
-            _stub = {job_id: dict(job_record)}
-
-            async def _run_async():
-                try:
-                    await loop.run_in_executor(pipeline_pool, run_fiber_after_pipeline, job_id, _stub, settings)
-                    await store.set(job_id, _stub[job_id])
-                except Exception as e:
-                    await store.update(job_id, {"status": JobStatus.FAILED, "error": str(e)})
-            asyncio.ensure_future(_run_async())
+            # Do NOT run PyTorch/YOLO locally on the API server — OOM risk.
+            logger.error(f"[{job_id}] All dispatch methods failed for fiber-after ({celery_err}). Marking as FAILED.")
+            asyncio.ensure_future(store.update(job_id, {
+                "status": JobStatus.FAILED,
+                "message": "Failed to dispatch job to RunPod or Celery.",
+                "error": "DispatchError"
+            }))
 
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
 
@@ -780,7 +772,6 @@ async def submit_job(
             rp_data = resp.json()
             if rp_data and rp_data.get("id"):
                 await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
-            resp.raise_for_status()
             logger.info(f"[{job_id}] Dispatched to RunPod Serverless.")
             _dispatched = True
         except Exception as _rp_err:

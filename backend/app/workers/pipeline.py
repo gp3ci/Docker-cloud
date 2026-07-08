@@ -116,11 +116,21 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 after_tile = t["tile"]
                 before_tile = fb[ty:ty+tile_size, tx:tx+tile_size]
                 
-                cv2.imwrite(str(td_before / f"before_{s_num}.png"), before_tile)
-                cv2.imwrite(str(td_after  / f"after_{s_num}.png"),  after_tile)
+                before_path = td_before / f"before_{s_num}.png"
+                after_path  = td_after  / f"after_{s_num}.png"
+                cv2.imwrite(str(before_path), before_tile)
+                cv2.imwrite(str(after_path),  after_tile)
                 sample_indices.append(s_num)
                 logger.info(f"[{job_id}] Saved sample tile pair {s_num} (density: {density:.6f})")
 
+                # Upload tiles to GCS immediately — RunPod containers are stateless.
+                # Without this, tiles are lost when the container exits and the frontend shows blanks.
+                try:
+                    upload_to_storage(before_path, f"jobs/{job_id}/tiles/before/before_{s_num}.png")
+                    upload_to_storage(after_path,  f"jobs/{job_id}/tiles/after/after_{s_num}.png")
+                    logger.info(f"[{job_id}] Uploaded tile pair {s_num} to GCS.")
+                except Exception as _gcs_err:
+                    logger.warning(f"[{job_id}] GCS tile upload failed for tile {s_num}: {_gcs_err}")
 
             if not sample_indices:
                 # Fallback: save top-left tile unconditionally
@@ -128,9 +138,17 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 td_after  = out / "tiles" / "after"
                 td_before.mkdir(parents=True, exist_ok=True)
                 td_after.mkdir(parents=True, exist_ok=True)
-                cv2.imwrite(str(td_before / "before_1.png"), fb[:tile_size, :tile_size])
-                cv2.imwrite(str(td_after  / "after_1.png"),  fa[:tile_size, :tile_size])
+                before_path = td_before / "before_1.png"
+                after_path  = td_after  / "after_1.png"
+                cv2.imwrite(str(before_path), fb[:tile_size, :tile_size])
+                cv2.imwrite(str(after_path),  fa[:tile_size, :tile_size])
                 logger.info(f"[{job_id}] Saved fallback sample tile pair (1)")
+                # Upload fallback tile to GCS as well
+                try:
+                    upload_to_storage(before_path, f"jobs/{job_id}/tiles/before/before_1.png")
+                    upload_to_storage(after_path,  f"jobs/{job_id}/tiles/after/after_1.png")
+                except Exception as _gcs_err:
+                    logger.warning(f"[{job_id}] GCS fallback tile upload failed: {_gcs_err}")
                 sample_indices = [1]
 
             job_store[job_id].update({
