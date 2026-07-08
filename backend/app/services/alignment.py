@@ -42,19 +42,67 @@ import fitz
 import numpy as np
 import cv2
 import sys
+import math
 
 try:
     doc = fitz.open("{pdf_path_posix}")
     page = doc.load_page(0)
-    pix = page.get_pixmap(dpi={dpi}, colorspace=fitz.csRGB, alpha=False)
-    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, 3)
-    doc.close()
     
-    if pix.n == 4:
-        img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
-    elif pix.n == 3:
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        
+    # Calculate dimensions
+    zoom = {dpi} / 72.0
+    mat = fitz.Matrix(zoom, zoom)
+    rect = page.rect
+    
+    # Target pixel dimensions
+    w_px = int(math.ceil(rect.width * zoom))
+    h_px = int(math.ceil(rect.height * zoom))
+    
+    # Create white canvas
+    img = np.full((h_px, w_px, 3), 255, dtype=np.uint8)
+    
+    # Tile size in points (e.g. 1000 points = ~1000 * 11.1 = 11100 px at 800 DPI)
+    # Using 500 points (~6.9 inches) to be very safe on memory per tile
+    tile_pt = 500.0
+    
+    for y0 in np.arange(0, rect.height, tile_pt):
+        for x0 in np.arange(0, rect.width, tile_pt):
+            x1 = min(x0 + tile_pt, rect.width)
+            y1 = min(y0 + tile_pt, rect.height)
+            clip_rect = fitz.Rect(x0, y0, x1, y1)
+            
+            pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=True, colorspace=fitz.csRGB)
+            if pix.w == 0 or pix.h == 0:
+                continue
+                
+            # Convert to numpy
+            tile_img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+            
+            if pix.n == 4:
+                # Composite alpha over white
+                alpha = tile_img[:, :, 3:] / 255.0
+                rgb = tile_img[:, :, :3]
+                white_bg = np.ones_like(rgb) * 255
+                tile_bgr = cv2.cvtColor((rgb * alpha + white_bg * (1 - alpha)).astype(np.uint8), cv2.COLOR_RGB2BGR)
+            elif pix.n == 3:
+                tile_bgr = cv2.cvtColor(tile_img, cv2.COLOR_RGB2BGR)
+            else:
+                tile_bgr = cv2.cvtColor(tile_img, cv2.COLOR_GRAY2BGR)
+                
+            # Calculate integer pixel coordinates for placing the tile
+            # Using precise rounding to avoid off-by-one gaps
+            px0 = int(round(x0 * zoom))
+            py0 = int(round(y0 * zoom))
+            
+            # Place tile in canvas (handling edge cases)
+            ph, pw = tile_bgr.shape[:2]
+            # Ensure we don't go out of bounds of the canvas
+            ph = min(ph, h_px - py0)
+            pw = min(pw, w_px - px0)
+            
+            if ph > 0 and pw > 0:
+                img[py0:py0+ph, px0:px0+pw] = tile_bgr[:ph, :pw]
+                
+    doc.close()
     np.save("{tmp_path_posix}", img)
     sys.exit(0)
 except Exception as e:

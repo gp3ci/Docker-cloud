@@ -977,30 +977,19 @@ async def perform_job_action(
                     run_fiber_after_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
                 else:
                     run_pipeline_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-            except Exception:
-                # Local fallback (mirroring submit logic)
-                import asyncio
-                loop = asyncio.get_running_loop()
-                pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+            except Exception as e_celery:
+                # Do NOT run local fallback for Phase 2 on the API server!
+                # Importing PyTorch here causes an OOM crash.
+                logger.error(f"[{job_id}] Local fallback disabled for Phase 2 due to memory constraints: {e_celery}")
                 
-                async def _resume_async():
-                    if not pipeline_pool:
-                        logger.error("No pipeline pool available for local fallback")
-                        return
-                        
-                    _stub = {job_id: await store.get(job_id)}
-                    
-                    if p_type == "fiber_after":
-                        from app.services.fiber_after import run_fiber_after_pipeline
-                        await loop.run_in_executor(pipeline_pool, run_fiber_after_pipeline, job_id, _stub, settings)
-                    else:
-                        from app.workers.pipeline import run_pipeline_sync
-                        detector = getattr(request.app.state, "detector", None)
-                        await loop.run_in_executor(pipeline_pool, run_pipeline_sync, job_id, _stub, settings, detector)
-                        
-                    await store.set(job_id, _stub[job_id])
+                async def _fail_job():
+                    await store.update(job_id, {
+                        "status": JobStatus.FAILED,
+                        "message": "Failed to dispatch Phase 2 to RunPod.",
+                        "error": "RunPod Dispatch Error"
+                    })
                 
-                asyncio.ensure_future(_resume_async())
+                asyncio.ensure_future(_fail_job())
 
         return {"message": f"Job resuming with status {next_status}"}
 
