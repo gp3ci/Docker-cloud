@@ -83,6 +83,16 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             W_inv = np.linalg.inv(W) if W is not None else np.eye(3)
             np.save(str(out / "W_inv.npy"), W_inv)
 
+            # Upload aligned maps to GCS — RunPod containers are stateless.
+            # Phase 2 runs on a NEW container and must download these from GCS.
+            try:
+                upload_to_storage(out / "aligned_after.png",  f"jobs/{job_id}/aligned_after.png")
+                upload_to_storage(out / "aligned_before.png", f"jobs/{job_id}/aligned_before.png")
+                upload_to_storage(out / "W_inv.npy",          f"jobs/{job_id}/W_inv.npy")
+                logger.info(f"[{job_id}] Uploaded aligned maps and W_inv to GCS.")
+            except Exception as _gcs_err:
+                logger.warning(f"[{job_id}] GCS aligned map upload failed: {_gcs_err}")
+
             # ── Save sample tiles for DPI confirmation preview ────────────────
             # The frontend shows tiles/{before|after}/before_N.png & after_N.png
             tile_size = settings.TILE_SIZE
@@ -163,9 +173,29 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
         # ── Phase 2: Detection + Reporting ───────────────────────────────────
         if job.get("status") == JobStatus.PROCESSING:
             _update(JobStatus.PROCESSING, 20.0, "AI analysis running...")
-            fa   = cv2.imread(str(out / "aligned_after.png"))
-            fb   = cv2.imread(str(out / "aligned_before.png"))
-            W_inv = np.load(str(out / "W_inv.npy"))
+
+            # Download aligned maps from GCS if not on local disk (stateless RunPod)
+            aligned_after_path  = out / "aligned_after.png"
+            aligned_before_path = out / "aligned_before.png"
+            w_inv_path          = out / "W_inv.npy"
+            if not aligned_after_path.exists():
+                logger.info(f"[{job_id}] Downloading aligned maps from GCS...")
+                try:
+                    download_from_storage(f"jobs/{job_id}/aligned_after.png",  aligned_after_path)
+                    download_from_storage(f"jobs/{job_id}/aligned_before.png", aligned_before_path)
+                    download_from_storage(f"jobs/{job_id}/W_inv.npy",          w_inv_path)
+                    logger.info(f"[{job_id}] Downloaded aligned maps from GCS successfully.")
+                except Exception as _dl_err:
+                    logger.error(f"[{job_id}] Failed to download aligned maps from GCS: {_dl_err}")
+                    job_store[job_id].update({"status": JobStatus.FAILED, "message": "Aligned maps not found.", "error": str(_dl_err)})
+                    return
+
+            fa    = cv2.imread(str(aligned_after_path))
+            fb    = cv2.imread(str(aligned_before_path))
+            W_inv = np.load(str(w_inv_path))
+            if fa is None or fb is None:
+                job_store[job_id].update({"status": JobStatus.FAILED, "message": "Aligned maps could not be read.", "error": "FileReadError"})
+                return
             re   = RuleEngine()
             callout_records: list[dict] = []
             tile_offsets:    dict       = {}
