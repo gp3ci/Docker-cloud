@@ -946,22 +946,32 @@ async def perform_job_action(
         
         # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
         _dispatched = False
+        _dispatch_error = "No dispatcher configured"
+
         if settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
             try:
                 resp = requests.post(
                     f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/run",
                     headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}", "Content-Type": "application/json"},
                     json={"input": _serialize_for_celery(job_record)},
-                    timeout=10,
+                    timeout=15,
                 )
+                logger.info(f"[{job_id}] RunPod Phase 2 response: HTTP {resp.status_code} — {resp.text[:300]}")
                 resp.raise_for_status()
                 rp_data = resp.json()
                 if rp_data and rp_data.get("id"):
                     await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
                 logger.info(f"[{job_id}] Resumed job dispatched to RunPod Serverless.")
                 _dispatched = True
+            except requests.exceptions.HTTPError as _rp_http_err:
+                _dispatch_error = f"RunPod rejected request: HTTP {_rp_http_err.response.status_code} — {_rp_http_err.response.text[:200]}"
+                logger.error(f"[{job_id}] {_dispatch_error}")
             except Exception as _rp_err:
-                logger.warning(f"[{job_id}] RunPod resume dispatch failed ({_rp_err}). Falling back to Celery.")
+                _dispatch_error = f"RunPod dispatch error: {_rp_err}"
+                logger.warning(f"[{job_id}] {_dispatch_error}. Falling back to Celery.")
+        else:
+            _dispatch_error = "RUNPOD_API_KEY or RUNPOD_ENDPOINT_ID not set in Render environment"
+            logger.warning(f"[{job_id}] {_dispatch_error}")
 
         if not _dispatched:
             try:
@@ -973,12 +983,13 @@ async def perform_job_action(
                 # Do NOT run local fallback for Phase 2 on the API server!
                 # Importing PyTorch here causes an OOM crash.
                 logger.error(f"[{job_id}] Local fallback disabled for Phase 2 due to memory constraints: {e_celery}")
+                final_error = f"{_dispatch_error} | Celery: {e_celery}"
                 
                 async def _fail_job():
                     await store.update(job_id, {
                         "status": JobStatus.FAILED,
-                        "message": "Failed to dispatch Phase 2 to RunPod.",
-                        "error": "RunPod Dispatch Error"
+                        "message": "Failed to dispatch Phase 2. Check Render logs for exact reason.",
+                        "error": final_error[:400]
                     })
                 
                 asyncio.ensure_future(_fail_job())
