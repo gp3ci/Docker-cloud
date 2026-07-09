@@ -905,7 +905,6 @@ async def perform_job_action(
         rp_job_id = job.get("runpod_job_id")
         if rp_job_id and settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
             try:
-                import requests
                 requests.post(
                     f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/cancel/{rp_job_id}",
                     headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}"},
