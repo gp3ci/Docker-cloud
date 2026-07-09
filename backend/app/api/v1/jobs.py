@@ -918,83 +918,85 @@ async def perform_job_action(
         return {"message": "Job aborted and workspace cleaned."}
 
     if body.action.upper() == "PROCEED":
-        # Move to next logical status
-        current_status = job["status"]
-        next_status = None
-        
-        if current_status == JobStatus.AWAITING_DPI_CONFIRM:
-            next_status = JobStatus.PROCESSING
-        elif current_status == JobStatus.AWAITING_REVIEW:
-            next_status = JobStatus.REPORTING
-            # Apply callout overrides if any
-            if body.overrides:
-                await store.update(job_id, {"all_callouts_visible": body.overrides})
-        
-        if not next_status:
-            raise HTTPException(status_code=400, detail=f"Cannot PROCEED from current status: {current_status}")
+        try:
+            # Move to next logical status
+            current_status = job["status"]
+            next_status = None
+            
+            if current_status == JobStatus.AWAITING_DPI_CONFIRM:
+                next_status = JobStatus.PROCESSING
+            elif current_status == JobStatus.AWAITING_REVIEW:
+                next_status = JobStatus.REPORTING
+                # Apply callout overrides if any
+                if body.overrides:
+                    await store.update(job_id, {"all_callouts_visible": body.overrides})
+            
+            if not next_status:
+                raise HTTPException(status_code=400, detail=f"Cannot PROCEED from current status: {current_status}")
 
-        update_dict = {"status": next_status, "message": "Resuming pipeline..."}
-        if current_status == JobStatus.AWAITING_DPI_CONFIRM and body.dpi is not None:
-            update_dict["dpi"] = body.dpi
-            logger.info(f"[{job_id}] User overridden DPI to {body.dpi}")
+            await store.update(job_id, {"status": next_status, "message": "Resuming pipeline..."})
+            job_record = await store.get(job_id)
+            
+            # Trigger pipeline again based on pipeline_type
+            p_type = job.get("pipeline_type", "coax")
+            
+            # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
+            _dispatched = False
+            _dispatch_error = "No dispatcher configured"
 
-        await store.update(job_id, update_dict)
-        job_record = await store.get(job_id)
-        
-        # Trigger pipeline again based on pipeline_type
-        p_type = job.get("pipeline_type", "coax")
-        
-        # Smart Dispatcher: RunPod Serverless → Celery → Local ThreadPool
-        _dispatched = False
-        _dispatch_error = "No dispatcher configured"
+            if settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
+                try:
+                    resp = requests.post(
+                        f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/run",
+                        headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}", "Content-Type": "application/json"},
+                        json={"input": _serialize_for_celery(job_record)},
+                        timeout=15,
+                    )
+                    logger.info(f"[{job_id}] RunPod Phase 2 response: HTTP {resp.status_code} — {resp.text[:300]}")
+                    resp.raise_for_status()
+                    rp_data = resp.json()
+                    if rp_data and rp_data.get("id"):
+                        await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
+                    logger.info(f"[{job_id}] Resumed job dispatched to RunPod Serverless.")
+                    _dispatched = True
+                except requests.exceptions.HTTPError as _rp_http_err:
+                    _dispatch_error = f"RunPod rejected request: HTTP {_rp_http_err.response.status_code} — {_rp_http_err.response.text[:200]}"
+                    logger.error(f"[{job_id}] {_dispatch_error}")
+                except Exception as _rp_err:
+                    _dispatch_error = f"RunPod dispatch error: {_rp_err}"
+                    logger.warning(f"[{job_id}] {_dispatch_error}. Falling back to Celery.")
+            else:
+                _dispatch_error = "RUNPOD_API_KEY or RUNPOD_ENDPOINT_ID not set in Render environment"
+                logger.warning(f"[{job_id}] {_dispatch_error}")
 
-        if settings.RUNPOD_API_KEY and settings.RUNPOD_ENDPOINT_ID:
-            try:
-                resp = requests.post(
-                    f"https://api.runpod.ai/v2/{settings.RUNPOD_ENDPOINT_ID}/run",
-                    headers={"Authorization": f"Bearer {settings.RUNPOD_API_KEY}", "Content-Type": "application/json"},
-                    json={"input": _serialize_for_celery(job_record)},
-                    timeout=15,
-                )
-                logger.info(f"[{job_id}] RunPod Phase 2 response: HTTP {resp.status_code} — {resp.text[:300]}")
-                resp.raise_for_status()
-                rp_data = resp.json()
-                if rp_data and rp_data.get("id"):
-                    await store.update(job_id, {"runpod_job_id": rp_data.get("id")})
-                logger.info(f"[{job_id}] Resumed job dispatched to RunPod Serverless.")
-                _dispatched = True
-            except requests.exceptions.HTTPError as _rp_http_err:
-                _dispatch_error = f"RunPod rejected request: HTTP {_rp_http_err.response.status_code} — {_rp_http_err.response.text[:200]}"
-                logger.error(f"[{job_id}] {_dispatch_error}")
-            except Exception as _rp_err:
-                _dispatch_error = f"RunPod dispatch error: {_rp_err}"
-                logger.warning(f"[{job_id}] {_dispatch_error}. Falling back to Celery.")
-        else:
-            _dispatch_error = "RUNPOD_API_KEY or RUNPOD_ENDPOINT_ID not set in Render environment"
-            logger.warning(f"[{job_id}] {_dispatch_error}")
+            if not _dispatched:
+                try:
+                    if p_type == "fiber_after":
+                        run_fiber_after_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+                    else:
+                        run_pipeline_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
+                except Exception as e_celery:
+                    # Do NOT run local fallback for Phase 2 on the API server!
+                    # Importing PyTorch here causes an OOM crash.
+                    logger.error(f"[{job_id}] Local fallback disabled for Phase 2 due to memory constraints: {e_celery}")
+                    final_error = f"{_dispatch_error} | Celery: {e_celery}"
+                    
+                    async def _fail_job():
+                        await store.update(job_id, {
+                            "status": JobStatus.FAILED,
+                            "message": "Failed to dispatch Phase 2. Check Render logs for exact reason.",
+                            "error": final_error[:400]
+                        })
+                    
+                    asyncio.ensure_future(_fail_job())
 
-        if not _dispatched:
-            try:
-                if p_type == "fiber_after":
-                    run_fiber_after_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-                else:
-                    run_pipeline_task.apply_async(args=[job_id], kwargs={"job_data": _serialize_for_celery(job_record)})
-            except Exception as e_celery:
-                # Do NOT run local fallback for Phase 2 on the API server!
-                # Importing PyTorch here causes an OOM crash.
-                logger.error(f"[{job_id}] Local fallback disabled for Phase 2 due to memory constraints: {e_celery}")
-                final_error = f"{_dispatch_error} | Celery: {e_celery}"
-                
-                async def _fail_job():
-                    await store.update(job_id, {
-                        "status": JobStatus.FAILED,
-                        "message": "Failed to dispatch Phase 2. Check Render logs for exact reason.",
-                        "error": final_error[:400]
-                    })
-                
-                asyncio.ensure_future(_fail_job())
-
-        return {"message": f"Job resuming with status {next_status}"}
+            return {"message": f"Job resuming with status {next_status}"}
+        except Exception as crash_err:
+            import traceback
+            tb_str = traceback.format_exc()
+            logger.error(f"[{job_id}] CRITICAL CRASH IN PROCEED: {tb_str}")
+            await store.update(job_id, {"status": JobStatus.FAILED, "error": f"CRASH: {tb_str}"[:1000]})
+            raise HTTPException(status_code=500, detail=f"Internal crash: {tb_str}")
 
     raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
 
