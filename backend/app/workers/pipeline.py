@@ -291,7 +291,16 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
 
         if job.get("status") == JobStatus.REPORTING:
             _update(JobStatus.REPORTING, 85.0, "Generating vector report...")
-            fa   = cv2.imread(str(out / "aligned_after.png"))
+            
+            # Download required Phase 1 output files from GCS (since Phase 3 runs on API server)
+            try:
+                if settings.GOOGLE_APPLICATION_CREDENTIALS_JSON:
+                    download_from_storage(f"jobs/{job_id}/aligned_after.png", out / "aligned_after.png")
+                    download_from_storage(f"jobs/{job_id}/W_inv.npy",          out / "W_inv.npy")
+            except Exception as _dl_err:
+                logger.warning(f"[{job_id}] GCS download failed in Phase 3: {_dl_err}")
+
+            fa    = cv2.imread(str(out / "aligned_after.png"))
             W_inv = np.load(str(out / "W_inv.npy"))
             
             # Apply user overrides
