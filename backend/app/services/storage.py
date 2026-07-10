@@ -47,7 +47,8 @@ def upload_to_storage(local_path: Path, target_name: str) -> str | None:
     try:
         bucket = client.bucket(GCS_BUCKET_NAME)
         blob = bucket.blob(target_name)
-        blob.upload_from_filename(str(local_path))
+        blob.chunk_size = 8 * 1024 * 1024  # 8 MB chunks for large files
+        blob.upload_from_filename(str(local_path), timeout=1200)
         logger.info(f"Uploaded {local_path} to GCS bucket {GCS_BUCKET_NAME} as {target_name}")
         return f"gs://{GCS_BUCKET_NAME}/{target_name}"
     except Exception as e:
@@ -62,8 +63,9 @@ def download_from_storage(target_name: str, local_path: Path) -> bool:
     try:
         bucket = client.bucket(GCS_BUCKET_NAME)
         blob = bucket.blob(target_name)
+        blob.chunk_size = 8 * 1024 * 1024
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        blob.download_to_filename(str(local_path))
+        blob.download_to_filename(str(local_path), timeout=1200)
         logger.info(f"Downloaded {target_name} from GCS to {local_path}")
         return True
     except Exception as e:
