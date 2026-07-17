@@ -83,16 +83,6 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             W_inv = np.linalg.inv(W) if W is not None else np.eye(3)
             np.save(str(out / "W_inv.npy"), W_inv)
 
-            # Upload aligned maps to GCS — RunPod containers are stateless.
-            # Phase 2 runs on a NEW container and must download these from GCS.
-            try:
-                upload_to_storage(out / "aligned_after.png",  f"jobs/{job_id}/aligned_after.png")
-                upload_to_storage(out / "aligned_before.png", f"jobs/{job_id}/aligned_before.png")
-                upload_to_storage(out / "W_inv.npy",          f"jobs/{job_id}/W_inv.npy")
-                logger.info(f"[{job_id}] Uploaded aligned maps and W_inv to GCS.")
-            except Exception as _gcs_err:
-                logger.warning(f"[{job_id}] GCS aligned map upload failed: {_gcs_err}")
-
             # ── Save sample tiles for DPI confirmation preview ────────────────
             # The frontend shows tiles/{before|after}/before_N.png & after_N.png
             tile_size = settings.TILE_SIZE
@@ -103,44 +93,26 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             td_before.mkdir(parents=True, exist_ok=True)
             td_after.mkdir(parents=True, exist_ok=True)
 
-            # Find the top 15 densest tiles to ensure they have content (not just blank borders)
-            candidate_tiles = []
+            # Save ONLY a few sample tiles for DPI confirmation preview (limit to 15 to prevent disk I/O overhead)
             for t in iter_tiles(fa, tile_size, settings.TILE_OVERLAP):
-                after_tile = t["tile"]
-                gray = cv2.cvtColor(after_tile, cv2.COLOR_BGR2GRAY)
-                # Count non-white pixels
-                density = np.sum(gray < 240) / gray.size
-                
-                # Only consider tiles with at least some content
-                if density > 0.005:
-                    candidate_tiles.append((density, t))
-
-            # Sort by density descending and take top 15
-            candidate_tiles.sort(key=lambda x: x[0], reverse=True)
-            top_candidates = candidate_tiles[:15]
-
-            for density, t in top_candidates:
                 s_num = t["index"]
                 tx, ty = t["x"], t["y"]
                 
-                after_tile = t["tile"]
-                before_tile = fb[ty:ty+tile_size, tx:tx+tile_size]
-                
-                before_path = td_before / f"before_{s_num}.png"
-                after_path  = td_after  / f"after_{s_num}.png"
-                cv2.imwrite(str(before_path), before_tile)
-                cv2.imwrite(str(after_path),  after_tile)
-                sample_indices.append(s_num)
-                logger.info(f"[{job_id}] Saved sample tile pair {s_num} (density: {density:.6f})")
+                after_tile  = t["tile"]
+                # Filter out mostly blank tiles from the frontend DPI preview
+                gray = cv2.cvtColor(after_tile, cv2.COLOR_BGR2GRAY)
+                density = np.sum(gray < 240) / gray.size
+                required_density = 0.0005 if dpi >= 800 else 0.01
+                if density > required_density:
+                    before_tile = fb[ty:ty+tile_size, tx:tx+tile_size]
+                    cv2.imwrite(str(td_before / f"before_{s_num}.png"), before_tile)
+                    cv2.imwrite(str(td_after  / f"after_{s_num}.png"),  after_tile)
+                    sample_indices.append(s_num)
+                    logger.info(f"[{job_id}] Saved sample tile pair {s_num} (density: {density:.6f})")
+                    
+                    if len(sample_indices) >= 15:
+                        break
 
-                # Upload tiles to GCS immediately — RunPod containers are stateless.
-                # Without this, tiles are lost when the container exits and the frontend shows blanks.
-                try:
-                    upload_to_storage(before_path, f"jobs/{job_id}/tiles/before/before_{s_num}.png")
-                    upload_to_storage(after_path,  f"jobs/{job_id}/tiles/after/after_{s_num}.png")
-                    logger.info(f"[{job_id}] Uploaded tile pair {s_num} to GCS.")
-                except Exception as _gcs_err:
-                    logger.warning(f"[{job_id}] GCS tile upload failed for tile {s_num}: {_gcs_err}")
 
             if not sample_indices:
                 # Fallback: save top-left tile unconditionally
@@ -148,17 +120,9 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 td_after  = out / "tiles" / "after"
                 td_before.mkdir(parents=True, exist_ok=True)
                 td_after.mkdir(parents=True, exist_ok=True)
-                before_path = td_before / "before_1.png"
-                after_path  = td_after  / "after_1.png"
-                cv2.imwrite(str(before_path), fb[:tile_size, :tile_size])
-                cv2.imwrite(str(after_path),  fa[:tile_size, :tile_size])
+                cv2.imwrite(str(td_before / "before_1.png"), fb[:tile_size, :tile_size])
+                cv2.imwrite(str(td_after  / "after_1.png"),  fa[:tile_size, :tile_size])
                 logger.info(f"[{job_id}] Saved fallback sample tile pair (1)")
-                # Upload fallback tile to GCS as well
-                try:
-                    upload_to_storage(before_path, f"jobs/{job_id}/tiles/before/before_1.png")
-                    upload_to_storage(after_path,  f"jobs/{job_id}/tiles/after/after_1.png")
-                except Exception as _gcs_err:
-                    logger.warning(f"[{job_id}] GCS fallback tile upload failed: {_gcs_err}")
                 sample_indices = [1]
 
             job_store[job_id].update({
@@ -173,29 +137,9 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
         # ── Phase 2: Detection + Reporting ───────────────────────────────────
         if job.get("status") == JobStatus.PROCESSING:
             _update(JobStatus.PROCESSING, 20.0, "AI analysis running...")
-
-            # Download aligned maps from GCS if not on local disk (stateless RunPod)
-            aligned_after_path  = out / "aligned_after.png"
-            aligned_before_path = out / "aligned_before.png"
-            w_inv_path          = out / "W_inv.npy"
-            if not aligned_after_path.exists():
-                logger.info(f"[{job_id}] Downloading aligned maps from GCS...")
-                try:
-                    download_from_storage(f"jobs/{job_id}/aligned_after.png",  aligned_after_path)
-                    download_from_storage(f"jobs/{job_id}/aligned_before.png", aligned_before_path)
-                    download_from_storage(f"jobs/{job_id}/W_inv.npy",          w_inv_path)
-                    logger.info(f"[{job_id}] Downloaded aligned maps from GCS successfully.")
-                except Exception as _dl_err:
-                    logger.error(f"[{job_id}] Failed to download aligned maps from GCS: {_dl_err}")
-                    job_store[job_id].update({"status": JobStatus.FAILED, "message": "Aligned maps not found.", "error": str(_dl_err)})
-                    return
-
-            fa    = cv2.imread(str(aligned_after_path))
-            fb    = cv2.imread(str(aligned_before_path))
-            W_inv = np.load(str(w_inv_path))
-            if fa is None or fb is None:
-                job_store[job_id].update({"status": JobStatus.FAILED, "message": "Aligned maps could not be read.", "error": "FileReadError"})
-                return
+            fa   = cv2.imread(str(out / "aligned_after.png"))
+            fb   = cv2.imread(str(out / "aligned_before.png"))
+            W_inv = np.load(str(out / "W_inv.npy"))
             re   = RuleEngine()
             callout_records: list[dict] = []
             tile_offsets:    dict       = {}
@@ -291,17 +235,7 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
 
         if job.get("status") == JobStatus.REPORTING:
             _update(JobStatus.REPORTING, 85.0, "Generating vector report...")
-            
-            # Download required Phase 1 output files from GCS (since Phase 3 runs on API server)
-            try:
-                import os
-                if os.getenv('GCS_BUCKET_NAME'):
-                    download_from_storage(f"jobs/{job_id}/aligned_after.png", out / "aligned_after.png")
-                    download_from_storage(f"jobs/{job_id}/W_inv.npy",          out / "W_inv.npy")
-            except Exception as _dl_err:
-                logger.warning(f"[{job_id}] GCS download failed in Phase 3: {_dl_err}")
-
-            fa    = cv2.imread(str(out / "aligned_after.png"))
+            fa   = cv2.imread(str(out / "aligned_after.png"))
             W_inv = np.load(str(out / "W_inv.npy"))
             
             # Apply user overrides
@@ -339,6 +273,22 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             for t in iter_tiles(fa, settings.TILE_SIZE, settings.TILE_OVERLAP):
                 tile_offsets[t["index"]] = (t["x"], t["y"])
 
+            survey_image_path = job.get("survey_image_path")
+            if survey_image_path:
+                s_path = Path(survey_image_path)
+                if not s_path.exists():
+                    survey_gcs = job.get("survey_image_path_gcs")
+                    if survey_gcs:
+                        try:
+                            import os
+                            if os.getenv("GCS_BUCKET_NAME"):
+                                download_from_storage(survey_gcs, s_path)
+                        except Exception as e:
+                            logger.error(f"[{job_id}] Failed to download survey image: {e}")
+                            survey_image_path = None
+                    else:
+                        survey_image_path = None
+
             generate_vector_report(
                 after_pdf_path=Path(job["after_path"]),
                 callout_records=final_callouts,
@@ -346,7 +296,7 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 W_inv=W_inv,
                 output_path=out / "report.pdf",
                 dpi=dpi,
-                survey_image_path=job.get("survey_image_path"),
+                survey_image_path=survey_image_path,
                 title_box_data={
                     "prism_id":   job.get("title_box", {}).get("prism_id", ""),
                     "node_name":  job.get("title_box", {}).get("node_name", ""),
@@ -460,12 +410,28 @@ def run_fiber_overview_pipeline(job_id, job_store, settings, processor=None, **k
         _update(JobStatus.REPORTING, 80.0, "Rendering PDF report...")
 
         report_path = out / "report.pdf"
+        survey_image_path = job.get("survey_image_path")
+        if survey_image_path:
+            s_path = Path(survey_image_path)
+            if not s_path.exists():
+                survey_gcs = job.get("survey_image_path_gcs")
+                if survey_gcs:
+                    try:
+                        import os
+                        if os.getenv("GCS_BUCKET_NAME"):
+                            download_from_storage(survey_gcs, s_path)
+                    except Exception as e:
+                        logger.error(f"[{job_id}] Failed to download survey image: {e}")
+                        survey_image_path = None
+                else:
+                    survey_image_path = None
+
         generate_final_report(
             pdf_path=pdf_path,
             callouts=callout_records,
             output_path=report_path,
             dpi=dpi,
-            survey_image_path=job.get("survey_image_path"),
+            survey_image_path=survey_image_path,
             title_box_data={
                 "prism_id":   title_box.get("prism_id", ""),
                 "node_name":  title_box.get("node_name", ""),
