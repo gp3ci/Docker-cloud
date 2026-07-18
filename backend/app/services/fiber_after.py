@@ -381,10 +381,15 @@ def run_fiber_after_pipeline(job_id: str, store: Any, settings: Settings):
                     survey_gcs = job.get("survey_image_path_gcs")
                     if survey_gcs:
                         try:
-                            s_path.parent.mkdir(parents=True, exist_ok=True)
-                            download_from_storage(survey_gcs, s_path)
+                            import os
+                            if os.getenv("GCS_BUCKET_NAME"):
+                                s_path.parent.mkdir(parents=True, exist_ok=True)
+                                download_from_storage(survey_gcs, s_path)
                         except Exception:
                             logger.warning(f"Failed to download survey image from {survey_gcs}")
+                            survey_image_path = None
+                    else:
+                        survey_image_path = None
 
             generate_vector_report(
                 after_pdf_path=pdf_path,
@@ -393,7 +398,7 @@ def run_fiber_after_pipeline(job_id: str, store: Any, settings: Settings):
                 W_inv=np.eye(3, dtype=np.float32),
                 output_path=report_path,
                 dpi=dpi,
-                survey_image_path=job.get("survey_image_path"),
+                survey_image_path=survey_image_path,
                 title_box_data={
                     "prism_id":   job.get("title_box", {}).get("prism_id", ""),
                     "node_name":  job.get("title_box", {}).get("node_name", ""),
