@@ -134,6 +134,16 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 logger.info(f"[{job_id}] Saved fallback sample tile pair (1)")
                 sample_indices = [1]
 
+            # ── Upload tiles to GCS so API Server can serve them ──
+            try:
+                import shutil
+                shutil.make_archive(str(out / "tiles"), 'zip', str(out / "tiles"))
+                import os
+                if os.getenv("GCS_BUCKET_NAME"):
+                    upload_to_storage(out / "tiles.zip", f"jobs/{job_id}/tiles.zip")
+            except Exception as e:
+                logger.error(f"[{job_id}] Failed to upload Phase 1 tiles to GCS: {e}")
+
             job_store[job_id].update({
                 "status":       JobStatus.AWAITING_DPI_CONFIRM,
                 "progress":     15.0,
@@ -229,6 +239,17 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             # Save state and halt for human review
             # Extract unique tile indices that have flagged callouts
             flagged_indices = list({c["tile_idx"] for c in callout_records if c.get("type") == "FLAGGED"})
+
+            # ── Upload tiles to GCS so API Server can serve them ──
+            try:
+                import shutil
+                import os
+                (out / "tiles").mkdir(parents=True, exist_ok=True)
+                shutil.make_archive(str(out / "tiles"), 'zip', str(out / "tiles"))
+                if os.getenv("GCS_BUCKET_NAME"):
+                    upload_to_storage(out / "tiles.zip", f"jobs/{job_id}/tiles.zip")
+            except Exception as e:
+                logger.error(f"[{job_id}] Failed to upload Phase 2 tiles to GCS: {e}")
 
             # Save state and halt for human review
             job_store[job_id].update({

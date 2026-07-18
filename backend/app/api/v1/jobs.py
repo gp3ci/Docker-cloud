@@ -832,6 +832,23 @@ async def get_job_status(
 ) -> JobStatusResponse:
     job = await _get_job_or_404(request, job_id)
     _verify_token(job, x_job_token)
+
+    # ── Fetch tiles from GCS if they don't exist locally on the API Server ──
+    if job["status"] in [JobStatus.AWAITING_DPI_CONFIRM, JobStatus.AWAITING_REVIEW, JobStatus.COMPLETED]:
+        settings = get_settings()
+        tiles_dir = settings.OUTPUTS_DIR / job_id / "tiles"
+        if not tiles_dir.exists():
+            tiles_zip_path = settings.OUTPUTS_DIR / job_id / "tiles.zip"
+            try:
+                from app.services.storage import download_from_storage
+                import shutil
+                tiles_zip_path.parent.mkdir(parents=True, exist_ok=True)
+                download_from_storage(f"jobs/{job_id}/tiles.zip", tiles_zip_path)
+                if tiles_zip_path.exists():
+                    shutil.unpack_archive(str(tiles_zip_path), str(tiles_dir))
+            except Exception as e:
+                logger.warning(f"[{job_id}] Failed to fetch tiles.zip from GCS: {e}")
+
     return JobStatusResponse(
         job_id=job_id,
         status=job["status"],
