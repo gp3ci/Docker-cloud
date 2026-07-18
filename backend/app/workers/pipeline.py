@@ -235,6 +235,16 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
 
         if job.get("status") == JobStatus.REPORTING:
             _update(JobStatus.REPORTING, 85.0, "Generating vector report...")
+            
+            # Download required Phase 1 output files from GCS (since Phase 3 runs on API server)
+            try:
+                import os
+                if os.getenv("GCS_BUCKET_NAME"):
+                    download_from_storage(f"jobs/{job_id}/aligned_after.png", out / "aligned_after.png")
+                    download_from_storage(f"jobs/{job_id}/W_inv.npy", out / "W_inv.npy")
+            except Exception as e:
+                logger.error(f"[{job_id}] Failed to download Phase 1 files from GCS: {e}")
+
             fa   = cv2.imread(str(out / "aligned_after.png"))
             W_inv = np.load(str(out / "W_inv.npy"))
             
