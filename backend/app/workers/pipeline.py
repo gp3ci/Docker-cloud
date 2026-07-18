@@ -83,6 +83,15 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             W_inv = np.linalg.inv(W) if W is not None else np.eye(3)
             np.save(str(out / "W_inv.npy"), W_inv)
 
+            # Upload critical Phase 1 outputs to GCS so Phase 3 (API Server) can download them
+            try:
+                import os
+                if os.getenv("GCS_BUCKET_NAME"):
+                    upload_to_storage(out / "aligned_after.png", f"jobs/{job_id}/aligned_after.png")
+                    upload_to_storage(out / "W_inv.npy", f"jobs/{job_id}/W_inv.npy")
+            except Exception as e:
+                logger.error(f"[{job_id}] Failed to upload Phase 1 files to GCS: {e}")
+
             # ── Save sample tiles for DPI confirmation preview ────────────────
             # The frontend shows tiles/{before|after}/before_N.png & after_N.png
             tile_size = settings.TILE_SIZE
