@@ -941,6 +941,13 @@ async def perform_job_action(
             
             if current_status == JobStatus.AWAITING_DPI_CONFIRM:
                 next_status = JobStatus.PROCESSING
+                
+                # Delete Phase 1 tiles locally so Phase 2 tiles can be freshly downloaded later
+                out_dir = Path(job["output_dir"])
+                import shutil
+                shutil.rmtree(out_dir / "tiles", ignore_errors=True)
+                (out_dir / "tiles.zip").unlink(missing_ok=True)
+                
             elif current_status == JobStatus.AWAITING_REVIEW:
                 next_status = JobStatus.REPORTING
                 # Apply callout overrides if any

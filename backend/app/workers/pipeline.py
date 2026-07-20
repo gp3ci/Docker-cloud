@@ -87,10 +87,9 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             try:
                 import os
                 if os.getenv("GCS_BUCKET_NAME"):
-                    upload_to_storage(out / "aligned_after.png", f"jobs/{job_id}/aligned_after.png")
                     upload_to_storage(out / "W_inv.npy", f"jobs/{job_id}/W_inv.npy")
             except Exception as e:
-                logger.error(f"[{job_id}] Failed to upload Phase 1 files to GCS: {e}")
+                logger.error(f"[{job_id}] Failed to upload Phase 1 W_inv to GCS: {e}")
 
             # ── Save sample tiles for DPI confirmation preview ────────────────
             # The frontend shows tiles/{before|after}/before_N.png & after_N.png
@@ -147,9 +146,11 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             job_store[job_id].update({
                 "status":       JobStatus.AWAITING_DPI_CONFIRM,
                 "progress":     15.0,
+                "message":      "Waiting for DPI confirmation...",
                 "sample_tiles": sample_indices,
+                "map_shape":    list(fa.shape[:2]),
             })
-            del fb, fa
+            del fa, fb
             gc.collect()
             return
 
@@ -256,7 +257,8 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 "status": JobStatus.AWAITING_REVIEW,
                 "progress": 80.0,
                 "flagged_tiles": flagged_indices,
-                "all_callouts": callout_records
+                "all_callouts": callout_records,
+                "tile_offsets": tile_offsets
             })
             del fa, fb
             import gc
@@ -270,13 +272,20 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             try:
                 import os
                 if os.getenv("GCS_BUCKET_NAME"):
-                    download_from_storage(f"jobs/{job_id}/aligned_after.png", out / "aligned_after.png")
                     download_from_storage(f"jobs/{job_id}/W_inv.npy", out / "W_inv.npy")
             except Exception as e:
                 logger.error(f"[{job_id}] Failed to download Phase 1 files from GCS: {e}")
 
-            fa   = cv2.imread(str(out / "aligned_after.png"))
-            W_inv = np.load(str(out / "W_inv.npy"))
+            try:
+                W_inv = np.load(str(out / "W_inv.npy"))
+            except Exception as e:
+                logger.error(f"[{job_id}] W_inv.npy not found, falling back to identity matrix: {e}")
+                W_inv = np.eye(3)
+            
+            # Retrieve cached metadata from job store (avoids downloading massive PNGs)
+            map_shape = job.get("map_shape", [2000, 2000])
+            raw_offsets = job.get("tile_offsets", {})
+            tile_offsets = {int(k): v for k, v in raw_offsets.items()}
             
             # Apply user overrides
             callout_records = job.get("all_callouts", [])
@@ -300,8 +309,8 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
             # Inject the Design Note for Coax After result map
             final_callouts.append({
                 "tile_idx": 0,
-                "gx": fa.shape[1] / 2.0,  # Start search from center of the map
-                "gy": fa.shape[0] / 2.0,
+                "gx": map_shape[1] / 2.0,  # Start search from center of the map
+                "gy": map_shape[0] / 2.0,
                 "lx": 0,
                 "ly": 0,
                 "text": "DESIGN NOTE: CHECK ALL ACTIVES AND ENSURE THEY\nHAVE BEEN REBALANCED PROPERLY",
@@ -309,9 +318,6 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                 "type": "NORMAL"
             })
 
-            tile_offsets = {}
-            for t in iter_tiles(fa, settings.TILE_SIZE, settings.TILE_OVERLAP):
-                tile_offsets[t["index"]] = (t["x"], t["y"])
 
             survey_image_path = job.get("survey_image_path")
             if survey_image_path:
