@@ -157,6 +157,31 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
         # ── Phase 2: Detection + Reporting ───────────────────────────────────
         if job.get("status") == JobStatus.PROCESSING:
             _update(JobStatus.PROCESSING, 20.0, "AI analysis running...")
+            
+            # CRITICAL FIX: RunPod Serverless Cold Start Resilience
+            # If Phase 2 runs on a new worker container, intermediate files are gone. Rebuild them locally.
+            if not (out / "aligned_after.png").exists() or not (out / "aligned_before.png").exists():
+                logger.warning(f"[{job_id}] Cold start in Phase 2. Re-generating alignment maps...")
+                fb_raw = _pdf_to_bgr(Path(job["before_path"]), dpi=dpi)
+                fa_raw = _pdf_to_bgr(Path(job["after_path"]),  dpi=dpi)
+                fb, fa, W = align_and_pad_maps(fb_raw, fa_raw)
+                if W is None:
+                    h1, w1 = fb.shape[:2]
+                    h2, w2 = fa.shape[:2]
+                    h_max, w_max = max(h1, h2), max(w1, w2)
+                    fb_padded = np.full((h_max, w_max, 3), 255, dtype=np.uint8)
+                    fa_padded = np.full((h_max, w_max, 3), 255, dtype=np.uint8)
+                    fb_padded[:h1, :w1] = fb
+                    fa_padded[:h2, :w2] = fa
+                    fb, fa = fb_padded, fa_padded
+                cv2.imwrite(str(out / "aligned_after.png"),  fa)
+                cv2.imwrite(str(out / "aligned_before.png"), fb)
+                W_inv = np.linalg.inv(W) if W is not None else np.eye(3)
+                np.save(str(out / "W_inv.npy"), W_inv)
+                del fb_raw, fa_raw
+                import gc
+                gc.collect()
+
             fa   = cv2.imread(str(out / "aligned_after.png"))
             fb   = cv2.imread(str(out / "aligned_before.png"))
             W_inv = np.load(str(out / "W_inv.npy"))
