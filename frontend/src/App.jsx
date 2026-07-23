@@ -14,6 +14,12 @@ import { InstructionsSection } from './components/sections/InstructionsSection';
 import { LandingSection } from './components/sections/LandingSection';
 import { SmoothScroll } from './components/ui/SmoothScroll';
 
+// DPI Reference Images
+import dpiCorrect1 from './assets/dpi_correct_1.png';
+import dpiCorrect2 from './assets/dpi_correct_2.png';
+import dpiIncorrect1 from './assets/dpi_incorrect_1.png';
+import dpiIncorrect2 from './assets/dpi_incorrect_2.png';
+
 const PlaceHolder = ({ name }) => (
   <div className="animate-fade-in" style={{ padding: '2rem', textAlign: 'center' }}>
     <h2 style={{ marginBottom: '1rem', fontFamily: 'Poppins, sans-serif' }}>{name} Section</h2>
@@ -49,10 +55,10 @@ function AppInner() {
       case 'coax': return <CoaxSection />;
       case 'instructions': return <InstructionsSection />;
       case 'help': return (
-        <div className="section-container animate-fade-in">
+        <div className="section-container animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
           <div className="section-header">
             <h2 className="section-title">How to Use Network Mapper</h2>
-            <p className="section-subtitle">A brief guide to understanding the workflow.</p>
+            <p className="section-subtitle">A brief guide to understanding the workflow and validating configuration.</p>
           </div>
           <div style={{ backgroundColor: 'var(--bg-secondary)', padding: '2rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--border-color)' }}>
             <ol style={{ paddingLeft: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem', color: 'var(--text-secondary)' }}>
@@ -63,8 +69,86 @@ function AppInner() {
               <li><strong>Instructions:</strong> Test alert behaviors and visual cues for standard scenarios.</li>
             </ol>
           </div>
+
+          <div className="section-header" style={{ marginTop: '1.5rem', marginBottom: '0.5rem' }}>
+            <h2 className="section-title" style={{ fontSize: '1.5rem' }}>DPI Calibration Reference</h2>
+            <p className="section-subtitle">
+              During the map alignment stage, a preview modal displays sample tiles. 
+              <strong> If the preview tiles in the modal look like the Correct DPI images below</strong>, then the selected DPI is correct and you can safely click proceed. 
+              <strong> If the preview tiles look like the Incorrect DPI images (showing broken component shapes, text borders cut at edges, or partial circles)</strong>, you must change the DPI setting and re-run.
+            </p>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '2rem' }}>
+            {/* Column 1: Correct DPI */}
+            <div style={{ 
+              display: 'flex', flexDirection: 'column', gap: '1.5rem', padding: '2rem', 
+              backgroundColor: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', 
+              border: '2px solid rgba(16, 185, 129, 0.4)', position: 'relative',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div style={{ 
+                position: 'absolute', top: '1.25rem', right: '1.25rem', padding: '0.25rem 0.75rem', borderRadius: 'var(--radius-pill)',
+                fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px',
+                backgroundColor: 'var(--success)', color: '#fff'
+              }}>
+                Correct DPI
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>Optimal Resolution</h3>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Symbols and numbers are sharp and completely visible.</p>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                <div style={{ overflow: 'hidden', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)' }}>
+                  <img src={dpiCorrect1} alt="Correct DPI 1" className="w-full h-auto block transform hover:scale-105 transition-transform duration-300" />
+                </div>
+                <div style={{ overflow: 'hidden', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)' }}>
+                  <img src={dpiCorrect2} alt="Correct DPI 2" className="w-full h-auto block transform hover:scale-105 transition-transform duration-300" />
+                </div>
+              </div>
+
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+                <strong>Key Indicators:</strong> Vector lines and curves are perfectly smooth. Bounding shapes (like the circular splitter values and component boundaries) are fully closed without any cuts or truncated edges. Values can be processed accurately by the OCR model.
+              </p>
+            </div>
+
+            {/* Column 2: Incorrect DPI */}
+            <div style={{ 
+              display: 'flex', flexDirection: 'column', gap: '1.5rem', padding: '2rem', 
+              backgroundColor: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)', 
+              border: '2px solid rgba(239, 68, 68, 0.4)', position: 'relative',
+              boxShadow: 'var(--shadow-sm)'
+            }}>
+              <div style={{ 
+                position: 'absolute', top: '1.25rem', right: '1.25rem', padding: '0.25rem 0.75rem', borderRadius: 'var(--radius-pill)',
+                fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px',
+                backgroundColor: 'var(--error)', color: '#fff'
+              }}>
+                Change DPI
+              </div>
+              <div>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>DPI Adjustment Required</h3>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Symbols or letters are cut off or missing borders.</p>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                <div style={{ overflow: 'hidden', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)' }}>
+                  <img src={dpiIncorrect1} alt="Incorrect DPI 1" className="w-full h-auto block transform hover:scale-105 transition-transform duration-300" />
+                </div>
+                <div style={{ overflow: 'hidden', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', backgroundColor: 'var(--bg-primary)' }}>
+                  <img src={dpiIncorrect2} alt="Incorrect DPI 2" className="w-full h-auto block transform hover:scale-105 transition-transform duration-300" />
+                </div>
+              </div>
+
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', lineHeight: '1.6' }}>
+                <strong>Key Indicators:</strong> Bounding components (like splitter text boxes or active circles) are broken, clipped, or only partially drawn due to grid tiling boundaries. If your tile previews look like this, change the DPI setting in the prompt and re-run.
+              </p>
+            </div>
+          </div>
         </div>
       );
+
       default: return <PlaceHolder name="Unknown" />;
     }
   };
