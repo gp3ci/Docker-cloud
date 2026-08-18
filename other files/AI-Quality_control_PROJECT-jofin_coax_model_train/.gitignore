@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+
+# Conda
+.conda
+
+# YOLOv8 & Ultralytics
+runs/
+*.pt
+*.onnx
+*.engine
+*.tflite
+*.pb
+*.torchscript
+
+# Project Specific Data & Outputs
+dataset/
+before/
+after/
+testing/
+3x3 and 4x4/
+inference_results/
+debug_log.txt
+env_log.txt
+val_v7_results.txt
+v7_metrics.json
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+.spyderproject
+.ropeproject
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+testing/
+dataset/
+after/
+before/
+3x3 and 4x4/

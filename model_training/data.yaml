@@ -1,0 +1,29 @@
+# Complete 22-class config matching best.pt
+path: /app/model_training/dataset
+train: images/train
+val: images/val
+
+nc: 22
+names:
+  0: 1x4 Node
+  1: 2way_splitter
+  2: 2x2 Node
+  3: 3Way_splitter
+  4: 3_way_amplifier
+  5: 3x3 Node
+  6: 4x4 Node
+  7: Block
+  8: Booster
+  9: Dual_Amplifier
+  10: Equalizer
+  11: Int_2way_splitter
+  12: Line_Extender
+  13: Power_Block
+  14: Splice
+  15: Splitter
+  16: Splitter_DC
+  17: Splitter_int_DC
+  18: Tag_id
+  19: Taps
+  20: Terminator
+  21: power_supply
