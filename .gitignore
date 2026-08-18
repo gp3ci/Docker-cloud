@@ -1,0 +1,12 @@
+# Model Training heavy files
+model_training/dataset/images/
+model_training/dataset/labels/
+model_training/runs/
+*.onnx
+*.engine
+
+# Environment and OS files
+.env
+.DS_Store
+Thumbs.db
+mingit/
