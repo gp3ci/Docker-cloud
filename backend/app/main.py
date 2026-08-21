@@ -68,7 +68,28 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    
+    # ── BULLETPROOF CORS CONFIGURATION FOR RENDER & CLOUD DEPLOYMENTS ──
+    origins = [
+        "https://docker-cloud-1.onrender.com",
+        "https://docker-cloud-xajt.onrender.com",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8000",
+        "*"
+    ]
+    
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_origin_regex=r"https://.*\.onrender\.com",
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allow_headers=["*"],
+        expose_headers=["Content-Disposition", "X-Job-Token", "*"],
+        max_age=3600,
+    )
     app.include_router(health.router, prefix=settings.API_PREFIX)
     app.include_router(jobs.router, prefix=settings.API_PREFIX)
     # app.mount("/outputs", StaticFiles(directory=str(settings.OUTPUTS_DIR)), name="outputs")
