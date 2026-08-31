@@ -12,23 +12,29 @@ from pathlib import Path
 from app.services.alignment import pdf_to_image
 
 def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 9) -> None:
-    """Patches annotation appearance stream for consistent red/yellow styling."""
+    """Patches annotation dictionary keys and appearance stream for persistent red border & yellow fill styling."""
     try:
         annot.set_flags(fitz.ANNOT_FLAG_PRINT)
-        ap_type, ap_val = doc.xref_get_key(annot.xref, "AP")
-        m = re.search(r"/N\s+(\d+)\s+\d+\s+R", ap_val)
-        if m:
-            n_xref = int(m.group(1))
-            raw = doc.xref_stream(n_xref)
-            doc.update_stream(n_xref, raw.replace(b"0 0 0 RG", b"1 0 0 RG"))
-
-        doc.xref_set_key(annot.xref, "C",  "[1 1 0]")
-        doc.xref_set_key(annot.xref, "IC", "[1 1 0]")
-        doc.xref_set_key(annot.xref, "DA", f"(1 0 0 RG 0 0 0 rg /Helv {font_size} Tf)")
+        
+        # Set stroke color (/C) to RED [1 0 0] and fill color (/IC) to YELLOW [1 1 0]
+        doc.xref_set_key(annot.xref, "C",  "[1 0 0]")            # Red border stroke color
+        doc.xref_set_key(annot.xref, "IC", "[1 1 0]")            # Yellow fill background color
+        doc.xref_set_key(annot.xref, "BS", "<< /W 2 /S /S >>")   # 2pt solid border style
+        doc.xref_set_key(annot.xref, "DA", f"(1 0 0 RG 1 1 0 rg /Helv {font_size} Tf)")
         doc.xref_set_key(
             annot.xref, "DS",
             f"(font: Helv {font_size}pt; color: #000000; background-color: #FFFF00; border: 2pt solid #FF0000;)"
         )
+
+        # Patch appearance stream (/AP) if present
+        ap_type, ap_val = doc.xref_get_key(annot.xref, "AP")
+        if ap_val and "/N" in ap_val:
+            m = re.search(r"/N\s+(\d+)\s+\d+\s+R", ap_val)
+            if m:
+                n_xref = int(m.group(1))
+                raw = doc.xref_stream(n_xref)
+                patched = raw.replace(b"0 0 0 RG", b"1 0 0 RG").replace(b"0 0 0 rg", b"1 1 0 rg")
+                doc.update_stream(n_xref, patched)
     except Exception:
         pass
 
