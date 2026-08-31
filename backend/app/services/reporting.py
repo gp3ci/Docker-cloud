@@ -11,8 +11,8 @@ import logging, math, fitz, numpy as np, re, cv2
 from pathlib import Path
 from app.services.alignment import pdf_to_image
 
-def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 9) -> None:
-    """Patches annotation dictionary keys and appearance stream for persistent red border & yellow fill styling."""
+def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 9, is_callout: bool = True) -> None:
+    """Patches annotation dictionary keys and appearance stream for persistent red border, yellow fill, and elastic arrow callouts."""
     try:
         annot.set_flags(fitz.ANNOT_FLAG_PRINT)
         
@@ -25,6 +25,12 @@ def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 9
             annot.xref, "DS",
             f"(font: Helv {font_size}pt; color: #000000; background-color: #FFFF00; border: 2pt solid #FF0000;)"
         )
+        
+        if is_callout:
+            doc.xref_set_key(annot.xref, "IT", "/FreeTextCallout")
+            doc.xref_set_key(annot.xref, "LE", "[/OpenArrow /None]")
+        else:
+            doc.xref_set_key(annot.xref, "IT", "/FreeText")
 
         # Patch appearance stream (/AP) if present
         ap_type, ap_val = doc.xref_get_key(annot.xref, "AP")
@@ -616,7 +622,7 @@ def _draw_legend_stack(
         annot.set_border(width=1.5, dashes=None)
         annot.set_colors(stroke=(1, 0, 0), fill=(1, 1, 0))
         annot.update()
-        _patch_annot_color(page.parent, annot, font_size=font_size)
+        _patch_annot_color(page.parent, annot, font_size=font_size, is_callout=False)
         
         curr_y += box_h + 8.0
 
