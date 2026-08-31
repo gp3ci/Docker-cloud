@@ -55,7 +55,7 @@ export const submitFiberOverviewJob = async (formData) => {
 };
 
 export const submitFiberBeforeJob = async (formData) => {
-  const response = await fetch(`${API_BASE_URL}/jobs/fiber-before`, {
+  const response = await fetch(`${API_BASE_URL}/jobs/fiber-overview-before`, {
     method: 'POST',
     headers: { ...NGROK_HEADERS },
     body: formData,

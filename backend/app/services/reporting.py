@@ -14,6 +14,7 @@ from app.services.alignment import pdf_to_image
 def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 9) -> None:
     """Patches annotation appearance stream for consistent red/yellow styling."""
     try:
+        annot.set_flags(fitz.ANNOT_FLAG_PRINT)
         ap_type, ap_val = doc.xref_get_key(annot.xref, "AP")
         m = re.search(r"/N\s+(\d+)\s+\d+\s+R", ap_val)
         if m:
