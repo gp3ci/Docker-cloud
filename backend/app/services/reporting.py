@@ -589,25 +589,28 @@ def _draw_legend_stack(
             curr_y = top_m + ss_h + 8.0
 
     if title_box_data:
-        # ── Draw yellow box with red border ───────────────────────────────────────
+        # ── Draw yellow title box as an interactive movable PDF FreeText Annotation ──
         if "SCHEMATIC" in map_type.upper():
             box_x0 = page_r.x0 + margin_pts + ss_w + 15.0
         else:
             box_x0 = page_r.width - box_w - BOX_RIGHT_MARGIN
         box_rect = fitz.Rect(box_x0, curr_y, box_x0 + box_w, curr_y + box_h)
-        page.draw_rect(box_rect, color=(1, 0, 0), fill=(1, 1, 0), width=1.5)
-
-        # ── Insert text lines ──────────────────────────────────────────────────────
-        text_y = curr_y + pad_h / 2 + font_size
-        for line in lines:
-            page.insert_text(
-                fitz.Point(box_x0 + pad_w / 2, text_y),
-                line,
-                fontsize=font_size,
-                fontname="helv",
-                color=(0, 0, 0),
-            )
-            text_y += line_h
+        
+        box_text = "\n".join(lines)
+        annot = page.add_freetext_annot(
+            box_rect,
+            box_text,
+            fontsize=font_size,
+            fontname="helv",
+            color=(0, 0, 0),
+            fill=(1, 1, 0),
+            align=fitz.TEXT_ALIGN_CENTER,
+        )
+        annot.set_border(width=1.5, dashes=None)
+        annot.set_colors(stroke=(1, 0, 0), fill=(1, 1, 0))
+        annot.update()
+        _patch_annot_color(page.parent, annot, font_size=font_size)
+        
         curr_y += box_h + 8.0
 
     if include_legend:
