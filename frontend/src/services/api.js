@@ -1,5 +1,5 @@
 // Cleanly handles the API URL to prevent double '/api/v1' issues
-const RAW_URL = import.meta.env.VITE_API_URL || 'https://luxurious-fiction-backroom.ngrok-free.dev';
+const RAW_URL = import.meta.env.VITE_API_URL || 'https://docker-cloud-xajt.onrender.com';
 const API_BASE_URL = RAW_URL.endsWith('/api/v1') ? RAW_URL : `${RAW_URL}/api/v1`;
 
 /**
