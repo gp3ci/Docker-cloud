@@ -610,18 +610,24 @@ def _draw_legend_stack(
         box_rect = fitz.Rect(box_x0, curr_y, box_x0 + box_w, curr_y + box_h)
         
         box_text = "\n".join(lines)
-        annot = page.add_freetext_annot(
-            box_rect,
-            box_text,
-            fontsize=font_size,
-            fontname="helv",
-            text_color=(0, 0, 0),
-            fill_color=(1, 1, 0),
-            align=fitz.TEXT_ALIGN_CENTER,
-        )
-        annot.set_border(width=1.5, dashes=None, colors={"stroke": (1, 0, 0), "fill": (1, 1, 0)})
-        annot.update()
-        _patch_annot_color(page.parent, annot, font_size=font_size, is_callout=False)
+        try:
+            annot = page.add_freetext_annot(
+                box_rect,
+                box_text,
+                fontsize=font_size,
+                fontname="helv",
+                text_color=(0, 0, 0),
+                fill_color=(1, 1, 0),
+                align=fitz.TEXT_ALIGN_CENTER,
+            )
+            try:
+                annot.set_border(width=1.5, dashes=None)
+            except Exception:
+                pass
+            annot.update()
+            _patch_annot_color(page.parent, annot, font_size=font_size, is_callout=False)
+        except Exception as err:
+            logger.warning(f"Could not place title box: {err}")
         
         curr_y += box_h + 8.0
 
