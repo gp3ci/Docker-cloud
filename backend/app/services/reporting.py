@@ -619,8 +619,7 @@ def _draw_legend_stack(
             fill_color=(1, 1, 0),
             align=fitz.TEXT_ALIGN_CENTER,
         )
-        annot.set_border(width=1.5, dashes=None)
-        annot.set_colors(stroke=(1, 0, 0), fill=(1, 1, 0))
+        annot.set_border(width=1.5, dashes=None, colors={"stroke": (1, 0, 0), "fill": (1, 1, 0)})
         annot.update()
         _patch_annot_color(page.parent, annot, font_size=font_size, is_callout=False)
         
