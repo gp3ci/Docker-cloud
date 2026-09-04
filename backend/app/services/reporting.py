@@ -615,8 +615,8 @@ def _draw_legend_stack(
             box_text,
             fontsize=font_size,
             fontname="helv",
-            color=(0, 0, 0),
-            fill=(1, 1, 0),
+            text_color=(0, 0, 0),
+            fill_color=(1, 1, 0),
             align=fitz.TEXT_ALIGN_CENTER,
         )
         annot.set_border(width=1.5, dashes=None)
