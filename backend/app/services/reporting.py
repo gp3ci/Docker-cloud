@@ -425,7 +425,7 @@ def generate_vector_report(
             callouts=callout_records
         )
 
-    doc.save(str(output_path), deflate=True, garbage=4, clean=True)
+    doc.save(str(output_path), deflate=True, garbage=4, clean=False)
     doc.close()
     logger.info(f"Report saved → {output_path}")
     return output_path
