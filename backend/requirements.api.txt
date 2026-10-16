@@ -23,3 +23,11 @@ google-cloud-storage>=2.16.0   # Google Cloud Storage SDK
 
 runpod>=1.6.0
 requests>=2.31.0
+
+# ──────────────────────────────────────────────
+# Processing & Fallback Support
+# ──────────────────────────────────────────────
+numpy>=1.26.0
+opencv-python-headless>=4.9.0
+pymupdf>=1.24.0
+
