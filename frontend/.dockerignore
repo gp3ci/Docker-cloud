@@ -1,0 +1,9 @@
+# Ignore frontend local builds and modules in Docker build
+node_modules/
+dist/
+build/
+.git/
+.gitignore
+.env
+.env.*
+*.log

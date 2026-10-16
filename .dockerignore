@@ -1,0 +1,19 @@
+# Ignore training materials, raw files, and local caches from Docker builds
+model_training/
+other files/
+model_training.zip
+runs/
+weights/
+*.onnx
+*.engine
+run_train_gpu.bat
+run_swagger_tester.bat
+.git/
+.gitignore
+.env
+.env.*
+*.log
+__pycache__/
+*.pyc
+node_modules/
+dist/

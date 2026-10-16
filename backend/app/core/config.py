@@ -51,6 +51,10 @@ class Settings(BaseSettings):
 
     @property
     def MAIN_MODEL_PATH(self) -> Path:
+        for candidate in ["best.pt", "best_gpu_retrained_model.pt"]:
+            p = self.MODELS_DIR / candidate
+            if p.exists():
+                return p
         return self._resolve_model("best.pt")
 
     @property

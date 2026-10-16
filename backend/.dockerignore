@@ -1,0 +1,15 @@
+# Ignore unnecessary backend files in Docker context
+.git/
+.gitignore
+.env
+.env.*
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+tests/
+storage/uploads/
+storage/outputs/
+.EasyOCR/
+*.log

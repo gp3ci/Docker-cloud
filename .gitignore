@@ -1,12 +1,58 @@
-# Model Training heavy files
-model_training/dataset/images/
-model_training/dataset/labels/
-model_training/runs/
+# ==============================================================================
+# Git Ignore Configuration - Docker-Cloud
+# ==============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Local Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+desktop.ini
+mingit/
+
+# Exclude Model Training & Raw Dataset Materials (User Requested: Not for GitHub)
+model_training/
+other files/
+model_training.zip
+runs/
+weights/
+yolov8n.pt
 *.onnx
 *.engine
 
-# Environment and OS files
-.env
-.DS_Store
-Thumbs.db
-mingit/
+# Local Batch Testing & Training Runners
+run_train_gpu.bat
+run_swagger_tester.bat
+
+# Backend Storage & Temporary Caches
+backend/model_weights/best_gpu_retrained_model.pt
+backend/model_weights/best_original_backup.pt
+backend/storage/uploads/
+backend/storage/outputs/
+backend/.EasyOCR/
+backend/tests/__pycache__/
+
+# Frontend Node Modules & Production Builds
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/build/
+
+# Logs
+*.log
