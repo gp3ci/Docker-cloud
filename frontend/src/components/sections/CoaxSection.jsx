@@ -310,8 +310,16 @@ export const CoaxSection = () => {
           jobToken={jobToken}
           title="Processing Coax Analysis"
           filename={`${mapName ? mapName.toUpperCase() : (nodeName || 'MAP')}_AFTER_COAX.pdf`}
-          onClose={() => setShowModal(false)}
-          onComplete={() => setShowModal(false)}
+          onClose={() => {
+            setShowModal(false);
+            setJobId(null);
+            setJobToken(null);
+          }}
+          onComplete={() => {
+            setShowModal(false);
+            setJobId(null);
+            setJobToken(null);
+          }}
         />
       )}
     </motion.div>

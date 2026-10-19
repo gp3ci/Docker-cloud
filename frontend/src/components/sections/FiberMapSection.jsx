@@ -351,10 +351,14 @@ export const FiberMapSection = ({ fields = {}, onFieldChange }) => {
           onClose={() => {
             setShowProgress(false);
             setIsAnalysing(false);
+            setJobId(null);
+            setJobToken(null);
           }}
           onComplete={() => {
             setShowProgress(false);
             setIsAnalysing(false);
+            setJobId(null);
+            setJobToken(null);
           }}
         />
       )}

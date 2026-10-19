@@ -951,12 +951,21 @@ async def perform_job_action(
 
     if body.action.upper() == "ABORT":
         # Cleanup tiles as requested but keep the PDFs for potential retry
-        out_dir = Path(job["output_dir"])
+        out_dir_str = job.get("output_dir") or str(settings.OUTPUTS_DIR / job_id)
+        out_dir = Path(out_dir_str)
         shutil.rmtree(out_dir, ignore_errors=True)
+        
+        tiles_dir = out_dir / "tiles"
+        if tiles_dir.exists():
+            shutil.rmtree(tiles_dir, ignore_errors=True)
+
         await store.update(job_id, {
             "status": JobStatus.FAILED,
             "message": "Job aborted by user.",
-            "progress": 0.0
+            "progress": 0.0,
+            "sample_tiles": [],
+            "flagged_tiles": [],
+            "all_callouts": [],
         })
         
         rp_job_id = job.get("runpod_job_id")
@@ -971,7 +980,7 @@ async def perform_job_action(
             except Exception as e:
                 logger.warning(f"Failed to cancel RunPod job {rp_job_id}: {e}")
 
-        return {"message": "Job aborted and workspace cleaned."}
+        return {"message": "Job aborted and workspace cleaned.", "status": "aborted"}
 
     if body.action.upper() == "PROCEED":
         try:

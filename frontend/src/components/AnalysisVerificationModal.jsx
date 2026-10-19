@@ -63,12 +63,14 @@ export const AnalysisVerificationModal = ({
     if (!window.confirm("Are you sure you want to abort? This will clear current tiles and let you change DPI.")) return;
     setLoading(true);
     try {
-      await postJobAction(jobId, jobToken, 'ABORT');
-      onAbort();
+      if (jobId && jobToken) {
+        await postJobAction(jobId, jobToken, 'ABORT');
+      }
     } catch (err) {
-      alert(`Failed to abort: ${err.message}`);
+      console.warn("Abort notification warning:", err);
     } finally {
       setLoading(false);
+      onAbort();
     }
   };
 

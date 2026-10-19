@@ -450,7 +450,14 @@ export const AnalysisProgressModal = ({
             flaggedTiles={flaggedTiles}
             allCallouts={allCallouts}
             onProceed={() => setWaitStatus(null)}
-            onAbort={onClose}
+            onAbort={() => {
+              if (pollerRef.current) clearInterval(pollerRef.current);
+              setWaitStatus(null);
+              setSampleTiles([]);
+              setFlaggedTiles([]);
+              setAllCallouts([]);
+              onClose();
+            }}
           />
         )}
       </AnimatePresence>
