@@ -6,9 +6,9 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +90,26 @@ def create_app() -> FastAPI:
         expose_headers=["Content-Disposition", "X-Job-Token", "*"],
         max_age=3600,
     )
+
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        logger.error(f"Unhandled exception during {request.method} {request.url}: {exc}", exc_info=True)
+        origin = request.headers.get("origin")
+        response = JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal Server Error",
+                "detail": str(exc),
+                "type": type(exc).__name__,
+            },
+        )
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+            response.headers["Access-Control-Allow-Headers"] = "*"
+        return response
+
     app.include_router(health.router, prefix=settings.API_PREFIX)
     app.include_router(jobs.router, prefix=settings.API_PREFIX)
     # app.mount("/outputs", StaticFiles(directory=str(settings.OUTPUTS_DIR)), name="outputs")

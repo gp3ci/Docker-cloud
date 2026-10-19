@@ -53,7 +53,7 @@ def upload_to_storage(local_path: Path, target_name: str) -> str | None:
         return f"gs://{GCS_BUCKET_NAME}/{target_name}"
     except Exception as e:
         logger.error(f"Failed to upload {local_path} to GCS: {e}")
-        raise e
+        return None
 
 def download_from_storage(target_name: str, local_path: Path) -> bool:
     """Downloads a file from GCS to local_path."""
@@ -70,4 +70,4 @@ def download_from_storage(target_name: str, local_path: Path) -> bool:
         return True
     except Exception as e:
         logger.error(f"Failed to download {target_name} from GCS: {e}")
-        raise e
+        return False

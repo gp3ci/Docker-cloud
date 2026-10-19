@@ -185,22 +185,32 @@ async def submit_coax_before_job(
             else:
                 raise ImportError("Celery tasks not available (missing ML dependencies).")
         except Exception as celery_err:
-            import asyncio
-            from app.services.coax_before import run_coax_before_pipeline
-            loop = asyncio.get_running_loop()
-            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
-            _stub: dict[str, dict] = {job_id: dict(job_record)}
+            try:
+                import asyncio
+                from app.services.coax_before import run_coax_before_pipeline
+                loop = asyncio.get_running_loop()
+                pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+                _stub: dict[str, dict] = {job_id: dict(job_record)}
 
-            async def _run_and_sync():
-                try:
-                    await asyncio.wait_for(
-                        loop.run_in_executor(pipeline_pool, run_coax_before_pipeline, job_id, _stub, settings),
-                        timeout=settings.JOB_TIMEOUT_SECONDS,
-                    )
-                    await store.set(job_id, _stub[job_id])
-                except asyncio.TimeoutError:
-                    await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
-            asyncio.ensure_future(_run_and_sync())
+                async def _run_and_sync():
+                    try:
+                        await asyncio.wait_for(
+                            loop.run_in_executor(pipeline_pool, run_coax_before_pipeline, job_id, _stub, settings),
+                            timeout=settings.JOB_TIMEOUT_SECONDS,
+                        )
+                        await store.set(job_id, _stub[job_id])
+                    except asyncio.TimeoutError:
+                        await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
+                    except Exception as err:
+                        await store.update(job_id, {"status": JobStatus.FAILED, "message": f"Processing error: {err}", "error": str(err)})
+                asyncio.ensure_future(_run_and_sync())
+            except Exception as _sync_err:
+                logger.error(f"[{job_id}] Local fallback worker unavailable: {_sync_err}")
+                await store.update(job_id, {
+                    "status": JobStatus.FAILED,
+                    "message": f"Worker dispatch failed: RunPod is unreachable and local fallback cannot start ({_sync_err}).",
+                    "error": str(_sync_err),
+                })
 
 
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
@@ -333,22 +343,32 @@ async def submit_fiber_overview_job(
                 raise ImportError("Celery tasks not available.")
         except Exception as celery_err:
             logger.warning(f"[{job_id}] Celery unavailable ({celery_err}). Falling back to local thread pool executor.")
-            import asyncio
-            from app.workers.pipeline import run_fiber_overview_pipeline
-            loop = asyncio.get_running_loop()
-            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
-            _stub: dict[str, dict] = {job_id: dict(job_record)}
+            try:
+                import asyncio
+                from app.workers.pipeline import run_fiber_overview_pipeline
+                loop = asyncio.get_running_loop()
+                pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+                _stub: dict[str, dict] = {job_id: dict(job_record)}
 
-            async def _run_and_sync():
-                try:
-                    await asyncio.wait_for(
-                        loop.run_in_executor(pipeline_pool, run_fiber_overview_pipeline, job_id, _stub, settings, None),
-                        timeout=settings.JOB_TIMEOUT_SECONDS,
-                    )
-                    await store.set(job_id, _stub[job_id])
-                except asyncio.TimeoutError:
-                    await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
-            asyncio.ensure_future(_run_and_sync())
+                async def _run_and_sync():
+                    try:
+                        await asyncio.wait_for(
+                            loop.run_in_executor(pipeline_pool, run_fiber_overview_pipeline, job_id, _stub, settings, None),
+                            timeout=settings.JOB_TIMEOUT_SECONDS,
+                        )
+                        await store.set(job_id, _stub[job_id])
+                    except asyncio.TimeoutError:
+                        await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
+                    except Exception as err:
+                        await store.update(job_id, {"status": JobStatus.FAILED, "message": f"Processing error: {err}", "error": str(err)})
+                asyncio.ensure_future(_run_and_sync())
+            except Exception as _sync_err:
+                logger.error(f"[{job_id}] Local fallback worker unavailable: {_sync_err}")
+                await store.update(job_id, {
+                    "status": JobStatus.FAILED,
+                    "message": f"Worker dispatch failed: RunPod is unreachable and local fallback cannot start ({_sync_err}).",
+                    "error": str(_sync_err),
+                })
     
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
 
@@ -477,22 +497,32 @@ async def submit_fiber_overview_before_job(
                 raise ImportError("Celery tasks not available.")
         except Exception as celery_err:
             logger.warning(f"[{job_id}] Celery unavailable ({celery_err}). Falling back to local threads.")
-            import asyncio
-            from app.services.fiber_before import run_fiber_before_pipeline
-            loop = asyncio.get_running_loop()
-            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
-            _stub: dict[str, dict] = {job_id: dict(job_record)}
+            try:
+                import asyncio
+                from app.services.fiber_before import run_fiber_before_pipeline
+                loop = asyncio.get_running_loop()
+                pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+                _stub: dict[str, dict] = {job_id: dict(job_record)}
 
-            async def _run_and_sync():
-                try:
-                    await asyncio.wait_for(
-                        loop.run_in_executor(pipeline_pool, run_fiber_before_pipeline, job_id, _stub, settings),
-                        timeout=settings.JOB_TIMEOUT_SECONDS,
-                    )
-                    await store.set(job_id, _stub[job_id])
-                except asyncio.TimeoutError:
-                    await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
-            asyncio.ensure_future(_run_and_sync())
+                async def _run_and_sync():
+                    try:
+                        await asyncio.wait_for(
+                            loop.run_in_executor(pipeline_pool, run_fiber_before_pipeline, job_id, _stub, settings),
+                            timeout=settings.JOB_TIMEOUT_SECONDS,
+                        )
+                        await store.set(job_id, _stub[job_id])
+                    except asyncio.TimeoutError:
+                        await store.update(job_id, {"status": JobStatus.FAILED, "message": "Job timed out.", "error": "TimeoutError"})
+                    except Exception as err:
+                        await store.update(job_id, {"status": JobStatus.FAILED, "message": f"Processing error: {err}", "error": str(err)})
+                asyncio.ensure_future(_run_and_sync())
+            except Exception as _sync_err:
+                logger.error(f"[{job_id}] Local fallback worker unavailable: {_sync_err}")
+                await store.update(job_id, {
+                    "status": JobStatus.FAILED,
+                    "message": f"Worker dispatch failed: RunPod is unreachable and local fallback cannot start ({_sync_err}).",
+                    "error": str(_sync_err),
+                })
     
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
 
@@ -787,31 +817,41 @@ async def submit_job(
         except Exception as celery_err:
             logger.warning(
                 f"[{job_id}] Celery unavailable ({celery_err}). "
-                "Falling back to local thread pool executor."
+                "Attempting local thread pool executor if dependencies exist."
             )
-            import asyncio
-            from app.workers.pipeline import run_pipeline_sync
-            detector = getattr(request.app.state, "detector", None)
-            loop = asyncio.get_running_loop()
-            pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
-            _stub: dict[str, dict] = {job_id: dict(job_record)}
+            try:
+                import asyncio
+                from app.workers.pipeline import run_pipeline_sync
+                detector = getattr(request.app.state, "detector", None)
+                loop = asyncio.get_running_loop()
+                pipeline_pool = getattr(request.app.state, "pipeline_pool", None)
+                _stub: dict[str, dict] = {job_id: dict(job_record)}
 
-            async def _run_and_sync():
-                try:
-                    await asyncio.wait_for(
-                        loop.run_in_executor(
-                            pipeline_pool, run_pipeline_sync, job_id, _stub, settings, detector,
-                        ),
-                        timeout=settings.JOB_TIMEOUT_SECONDS,
-                    )
-                    await store.set(job_id, _stub[job_id])
-                except asyncio.TimeoutError:
-                    await store.update(job_id, {
-                        "status":  JobStatus.FAILED,
-                        "message": f"Job timed out after {settings.JOB_TIMEOUT_SECONDS}s.",
-                        "error":   "TimeoutError",
-                    })
-            asyncio.ensure_future(_run_and_sync())
+                async def _run_and_sync():
+                    try:
+                        await asyncio.wait_for(
+                            loop.run_in_executor(
+                                pipeline_pool, run_pipeline_sync, job_id, _stub, settings, detector,
+                            ),
+                            timeout=settings.JOB_TIMEOUT_SECONDS,
+                        )
+                        await store.set(job_id, _stub[job_id])
+                    except asyncio.TimeoutError:
+                        await store.update(job_id, {
+                            "status":  JobStatus.FAILED,
+                            "message": f"Job timed out after {settings.JOB_TIMEOUT_SECONDS}s.",
+                            "error":   "TimeoutError",
+                        })
+                    except Exception as err:
+                        await store.update(job_id, {"status": JobStatus.FAILED, "message": f"Processing error: {err}", "error": str(err)})
+                asyncio.ensure_future(_run_and_sync())
+            except Exception as _sync_err:
+                logger.error(f"[{job_id}] Local fallback worker unavailable: {_sync_err}")
+                await store.update(job_id, {
+                    "status": JobStatus.FAILED,
+                    "message": f"Worker dispatch failed: RunPod is unreachable and local fallback cannot start ({_sync_err}).",
+                    "error": str(_sync_err),
+                })
 
     return JobCreatedResponse(job_id=job_id, job_token=job_token)
 
