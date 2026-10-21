@@ -11,19 +11,17 @@ import logging, math, fitz, numpy as np, re, cv2
 from pathlib import Path
 from app.services.alignment import pdf_to_image
 
-def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 9, is_callout: bool = True) -> None:
-    """Patches annotation dictionary keys and appearance stream for persistent red border, yellow fill, and elastic arrow callouts."""
+def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 10, is_callout: bool = True) -> None:
+    """Patches annotation dictionary keys directly via xref so MuPDF does not mark annotations as dirty."""
     try:
-        annot.set_flags(fitz.ANNOT_FLAG_PRINT)
-        
-        # Set stroke color (/C) to RED [1 0 0] and fill color (/IC) to YELLOW [1 1 0]
-        doc.xref_set_key(annot.xref, "C",  "[1 0 0]")            # Red border stroke color
-        doc.xref_set_key(annot.xref, "IC", "[1 1 0]")            # Yellow fill background color
-        doc.xref_set_key(annot.xref, "BS", "<< /W 2 /S /S >>")   # 2pt solid border style
-        doc.xref_set_key(annot.xref, "DA", f"(1 0 0 RG 1 1 0 rg /Helv {font_size} Tf)")
+        doc.xref_set_key(annot.xref, "F", "4") # fitz.PDF_ANNOT_IS_PRINT
+        doc.xref_set_key(annot.xref, "BS", "<< /W 2.5 /S /S >>") # 2.5pt solid border style
+        doc.xref_set_key(annot.xref, "C", "[1 0 0]") # Red stroke
+        doc.xref_set_key(annot.xref, "IC", "[1 1 0]") # Yellow fill
+        doc.xref_set_key(annot.xref, "DA", f"(0 0 0 rg /Helv {font_size} Tf)")
         doc.xref_set_key(
             annot.xref, "DS",
-            f"(font: Helv {font_size}pt; color: #000000; background-color: #FFFF00; border: 2pt solid #FF0000;)"
+            f"(font: Helv {font_size}pt; color: #000000; background-color: #FFFF00; border: 2.5pt solid #FF0000;)"
         )
         
         if is_callout:
@@ -31,18 +29,8 @@ def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 9
             doc.xref_set_key(annot.xref, "LE", "[/OpenArrow /None]")
         else:
             doc.xref_set_key(annot.xref, "IT", "/FreeText")
-
-        # Patch appearance stream (/AP) if present
-        ap_type, ap_val = doc.xref_get_key(annot.xref, "AP")
-        if ap_val and "/N" in ap_val:
-            m = re.search(r"/N\s+(\d+)\s+\d+\s+R", ap_val)
-            if m:
-                n_xref = int(m.group(1))
-                raw = doc.xref_stream(n_xref)
-                patched = raw.replace(b"0 0 0 RG", b"1 0 0 RG").replace(b"0 0 0 rg", b"1 1 0 rg")
-                doc.update_stream(n_xref, patched)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Error patching annotation {annot.xref}: {e}")
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +96,7 @@ def generate_vector_report(
 
     # ── Render callout annotations ────────────────────────────────────────────
     if callout_records:
-        CALLOUT_FONT_SIZE = title_font_size
+        CALLOUT_FONT_SIZE = 10          # 10pt Helvetica as per specification
         DEDUP_RADIUS_PTS  = 50.0        # Merge identical labels within 50pt
         
         # Arrow offset: coax (high DPI >= 300) works best with 30, fiber (low DPI <= 90) needs 65+
@@ -425,7 +413,42 @@ def generate_vector_report(
             callouts=callout_records
         )
 
-    doc.save(str(output_path), deflate=True, garbage=4, clean=False)
+    # ── Final appearance stream patch pass across all pages and annotations ──
+    for page_idx in range(doc.page_count):
+        p = doc[page_idx]
+        for a in list(p.annots()):
+            if a.type[0] == 2:  # FreeText / FreeTextCallout
+                xref = a.xref
+                # Direct low-level xref dictionary modifications to preserve custom AP stream
+                doc.xref_set_key(xref, "F", "4")  # fitz.PDF_ANNOT_IS_PRINT
+                doc.xref_set_key(xref, "BS", "<< /W 2.5 /S /S >>")  # 2.5pt solid border
+                doc.xref_set_key(xref, "C", "[1 0 0]")  # Stroke: Red
+                doc.xref_set_key(xref, "IC", "[1 1 0]")  # Interior/Fill: Yellow
+                doc.xref_set_key(xref, "DA", "(0 0 0 rg /Helv 10 Tf)")
+                doc.xref_set_key(
+                    xref, "DS",
+                    "(font: Helv 10pt; color: #000000; background-color: #FFFF00; border: 2.5pt solid #FF0000;)"
+                )
+                ap_type, ap_val = doc.xref_get_key(xref, "AP")
+                if ap_val and "/N" in ap_val:
+                    m = re.search(r"/N\s+(\d+)", ap_val)
+                    if m:
+                        n_xref = int(m.group(1))
+                        raw = doc.xref_stream(n_xref)
+                        # 1. Replace RGB stroke with red RGB stroke (1 0 0 RG)
+                        patched = re.sub(rb"\d+\.?\d*\s+\d+\.?\d*\s+\d+\.?\d*\s+RG", b"1 0 0 RG", raw)
+                        # 2. Replace Grayscale stroke (e.g. 0 G) with red RGB stroke (1 0 0 RG)
+                        patched = re.sub(rb"(?<!\w)\d+\.?\d*\s+G\b", b"1 0 0 RG", patched)
+                        # 3. Ensure stroke width is at least 2.5pt
+                        patched = re.sub(rb"\b0\s+w\b", b"2.5 w", patched)
+                        patched = re.sub(rb"\b1\.5\s+w\b", b"2.5 w", patched)
+                        patched = re.sub(rb"\b1\s+w\b", b"2.5 w", patched)
+                        # 4. If fill-only rect without stroke exists, convert 're \n f' to 're \n B' (fill & stroke)
+                        if b" re\nS" not in patched and b" re\r\nS" not in patched and b" re S" not in patched and b" re\nf\n" in patched:
+                            patched = re.sub(rb"(\d+\.?\d*\s+\d+\.?\d*\s+\d+\.?\d*\s+\d+\.?\d*\s+re\s*\r?\n\s*)f\b", rb"\g<1>B", patched)
+                        doc.update_stream(n_xref, patched)
+
+    doc.save(str(output_path), deflate=True, clean=False)
     doc.close()
     logger.info(f"Report saved → {output_path}")
     return output_path
@@ -621,7 +644,7 @@ def _draw_legend_stack(
                 align=fitz.TEXT_ALIGN_CENTER,
             )
             try:
-                annot.set_border(width=1.5, dashes=None)
+                annot.set_border(width=2.5, dashes=None)
             except Exception:
                 pass
             annot.update()
@@ -638,7 +661,7 @@ def _draw_legend_stack(
         else:
             leg_x0 = page_r.width - leg_w - BOX_RIGHT_MARGIN
         bg = fitz.Rect(leg_x0, curr_y, leg_x0 + leg_w, curr_y + leg_h)
-        page.draw_rect(bg, color=(0, 0, 0), fill=(1, 1, 1), width=1.5)
+        page.draw_rect(bg, color=(1, 0, 0), fill=(1, 1, 1), width=2.5)
 
         counts = {k: 0 for k in LEGEND_DATA}
         callouts = kwargs.get("callouts", [])
