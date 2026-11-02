@@ -71,9 +71,9 @@ class RuleEngine:
             if "int_2way_splitter" in cls or "splitter_int_dc" in cls:
                 loc = get_center(obj["bbox"])
                 model_name = obj.get("model", "unknown")
-                # Check for containment inside an amplifier from best.pt
+                # Check for containment inside an amplifier
                 for amp in all_after:
-                    if "amplifier" in amp["cls"].lower() and amp.get("model") == "best.pt":
+                    if "amplifier" in amp["cls"].lower():
                         if is_center_inside(obj, amp):
                             callout_text = "UPGRADE INT 2 WAY SPLITTER" if "int_2way_splitter" in cls else "UPGRADE INT DC"
                             tile_int_splitters.append({

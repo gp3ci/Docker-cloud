@@ -2,6 +2,8 @@
 Central application configuration.
 All settings are loaded from environment variables or a .env file.
 """
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 from functools import lru_cache
@@ -51,11 +53,14 @@ class Settings(BaseSettings):
 
     @property
     def MAIN_MODEL_PATH(self) -> Path:
-        for candidate in ["best.pt", "best_gpu_retrained_model.pt"]:
-            p = self.MODELS_DIR / candidate
-            if p.exists():
-                return p
         return self._resolve_model("best.pt")
+
+    @property
+    def RETRAINED_MODEL_PATH(self) -> Path | None:
+        p = self.MODELS_DIR / "best_gpu_retrained_model.pt"
+        if p.exists():
+            return p
+        return None
 
     @property
     def PS_MODEL_PATH(self) -> Path:

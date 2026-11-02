@@ -39,13 +39,19 @@ class TelecomDetector:
         ps_model_path: Path,
         node_model_path: Path,
         internal_model_path: Path,
+        retrained_model_path: Path | None = None,
         use_gpu: bool = True,
         dpi: int = 600,
     ) -> None:
         self.dpi = dpi
         logger.info(f"CUDA available: {torch.cuda.is_available()}, DPI set to {self.dpi}")
-        logger.info(f"Loading YOLO from {main_model_path} (DPI: {self.dpi})...")
+        logger.info(f"Loading Baseline YOLO from {main_model_path} (DPI: {self.dpi})...")
         self.model = YOLO(str(main_model_path))
+
+        self.retrained_model = None
+        if retrained_model_path and Path(retrained_model_path).exists():
+            logger.info(f"Loading Retrained Actives/Splitters YOLO from {retrained_model_path}...")
+            self.retrained_model = YOLO(str(retrained_model_path))
 
         logger.info(f"Loading Power Supply YOLO from {ps_model_path}...")
         self.ps_model = YOLO(str(ps_model_path))
@@ -113,33 +119,73 @@ class TelecomDetector:
                 })
             return objs
 
-        # ── run all four models ───────────────────────────────────────────────
+        # ── run models (multi-model ensemble) ─────────────────────────────────
+        final_objects: list[dict] = []
 
-        # 1. Main Model (best.pt) → Everything EXCEPT nodes and power blocks
-        results_main = self.model(img, verbose=False, conf=conf_threshold)[0]
-        objs_main = process_results(results_main, self.model,
-                                    blocked_classes=["node", "power_block"], model_name="best.pt")
+        if self.retrained_model is not None:
+            # 1a. Retrained Model → Actives (Amps, LE) & External Splitters (95%+ accuracy)
+            results_retrained = self.retrained_model(img, verbose=False, conf=conf_threshold)[0]
+            objs_retrained = process_results(
+                results_retrained,
+                self.retrained_model,
+                allowed_classes=[
+                    "dual_amplifier",
+                    "3_way_amplifier",
+                    "line_extender",
+                    "2way_splitter",
+                    "3way_splitter",
+                    "splitter_dc",
+                    "splitter",
+                ],
+                blocked_classes=["int_2way_splitter", "splitter_int_dc"],
+                model_name="best_gpu_retrained_model.pt",
+            )
+            final_objects.extend(objs_retrained)
+
+            # 1b. Baseline Model (best.pt) → Taps, Equalizers, Terminators, Splices, Boosters
+            results_main = self.model(img, verbose=False, conf=conf_threshold)[0]
+            objs_main = process_results(
+                results_main,
+                self.model,
+                allowed_classes=[
+                    "tap",
+                    "equalizer",
+                    "terminator",
+                    "splice",
+                    "booster",
+                ],
+                blocked_classes=["node", "power_block", "amplifier", "splitter", "line_extender"],
+                model_name="best.pt",
+            )
+            final_objects.extend(objs_main)
+        else:
+            # Baseline single-model fallback: everything except nodes & power blocks
+            results_main = self.model(img, verbose=False, conf=conf_threshold)[0]
+            objs_main = process_results(
+                results_main,
+                self.model,
+                blocked_classes=["node", "power_block"],
+                model_name="best.pt",
+            )
+            final_objects.extend(objs_main)
 
         # 2. Power Supply Model → ONLY Power Blocks (conf=0.5)
         results_ps = self.ps_model(img, verbose=False, conf=0.5)[0]
         objs_ps = process_results(results_ps, self.ps_model,
                                    allowed_classes=["power_block"], model_name="power_supply_best.pt")
+        final_objects.extend(objs_ps)
 
         # 3. Node Model → ONLY Nodes (1x1, 2x2, 3x3, 4x4)
         results_node = self.node_model(img, verbose=False, conf=conf_threshold)[0]
         objs_node = process_results(results_node, self.node_model,
                                      allowed_classes=["node"], model_name="3x3_4x4_new_model.pt")
+        final_objects.extend(objs_node)
 
         # 4. Internal model → Internal splitters
         results_internal = self.internal_model(img, conf=0.0001, verbose=False)[0]
         objs_internal = process_results(results_internal, self.internal_model,
                                          allowed_classes=["int_2way_splitter", "splitter_int_dc"],
                                          model_name="Internal_best.pt")
-
-        final_objects: list[dict] = []
-        final_objects.extend(objs_node)
-        final_objects.extend(objs_ps)
-        final_objects.extend(objs_main)
         final_objects.extend(objs_internal)
 
         # ── filtering rules ───────────────────────────────────────────────────

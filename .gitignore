@@ -41,12 +41,12 @@ run_train_gpu.bat
 run_swagger_tester.bat
 
 # Backend Storage & Temporary Caches
-backend/model_weights/best_gpu_retrained_model.pt
 backend/model_weights/best_original_backup.pt
 backend/storage/uploads/
 backend/storage/outputs/
 backend/.EasyOCR/
 backend/tests/__pycache__/
+backend/test_runs/
 
 # Frontend Node Modules & Production Builds
 frontend/node_modules/

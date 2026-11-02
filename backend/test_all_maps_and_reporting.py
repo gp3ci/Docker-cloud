@@ -40,6 +40,7 @@ def run_map_test(before_pdf: Path, after_pdf: Path, out_dir: Path, map_id: str, 
     print(f"[{map_id}] Initializing Detector on CUDA={torch.cuda.is_available()}...")
     detector = TelecomDetector(
         main_model_path=settings.MAIN_MODEL_PATH,
+        retrained_model_path=settings.RETRAINED_MODEL_PATH,
         ps_model_path=settings.MODELS_DIR / "power_supply_best.pt",
         node_model_path=settings.MODELS_DIR / "3x3_4x4_new_model.pt",
         internal_model_path=settings.MODELS_DIR / "Internal_best.pt",

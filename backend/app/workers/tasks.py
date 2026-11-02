@@ -105,6 +105,7 @@ def _get_detector(settings):
         logger.info("Initializing Shared AI Engine (this takes ~3 mins)...")
         _SHARED_DETECTOR = TelecomDetector(
             main_model_path=settings.MAIN_MODEL_PATH,
+            retrained_model_path=settings.RETRAINED_MODEL_PATH,
             ps_model_path=settings.PS_MODEL_PATH,
             node_model_path=settings.NODE_MODEL_PATH,
             internal_model_path=settings.INTERNAL_MODEL_PATH,
