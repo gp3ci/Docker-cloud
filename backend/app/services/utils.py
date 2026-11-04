@@ -132,39 +132,3 @@ def clean_ocr_text(text: str, cls_name: str) -> str:
 
     # General fallback
     return " ".join(re.sub(r"[^a-zA-Z0-9\s.-]", "", text).split())
-
-
-def deduplicate_global_callouts(callouts: list[dict], dist_thresh_px: float = 120.0) -> list[dict]:
-    """
-    Deduplicates callouts that were detected across adjacent overlapping tiles.
-    1. Suppresses 'A' if 'B' (LE->Amp) or 'UPGRADE NODE' is within dist_thresh_px.
-    2. Merges duplicate identical callouts within dist_thresh_px (keeps first/highest priority occurrence).
-    """
-    priority_order = {"UPGRADE NODE": 0, "B": 1, "G": 2, "J": 3, "E, ADD TERM": 4, "A": 10}
-    sorted_callouts = sorted(callouts, key=lambda c: priority_order.get(c.get("text", "").strip(), 5))
-
-    kept: list[dict] = []
-    for c in sorted_callouts:
-        c_text = c.get("text", "").strip()
-        c_gx, c_gy = float(c.get("gx", 0)), float(c.get("gy", 0))
-
-        is_dup = False
-        for k in kept:
-            k_text = k.get("text", "").strip()
-            k_gx, k_gy = float(k.get("gx", 0)), float(k.get("gy", 0))
-            dist = math.hypot(c_gx - k_gx, c_gy - k_gy)
-
-            # Rule 1: Identical callouts within distance threshold (e.g. A vs A from overlapping tiles)
-            if c_text == k_text and dist < dist_thresh_px:
-                is_dup = True
-                break
-
-            # Rule 2: Suppress general 'A' if specific 'B' (LE->Amp) or 'UPGRADE NODE' is at the same symbol
-            if c_text == "A" and (k_text == "B" or "NODE" in k_text) and dist < dist_thresh_px:
-                is_dup = True
-                break
-
-        if not is_dup:
-            kept.append(c)
-
-    return kept

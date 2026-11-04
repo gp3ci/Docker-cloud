@@ -97,7 +97,7 @@ def generate_vector_report(
     # ── Render callout annotations ────────────────────────────────────────────
     if callout_records:
         CALLOUT_FONT_SIZE = 10          # 10pt Helvetica as per specification
-        DEDUP_RADIUS_PTS  = 80.0        # Merge identical labels within 80pt
+        DEDUP_RADIUS_PTS  = 50.0        # Merge identical labels within 50pt
         
         # Arrow offset: coax (high DPI >= 300) works best with 30, fiber (low DPI <= 90) needs 65+
         if dpi < 100:
@@ -128,15 +128,7 @@ def generate_vector_report(
             pdf_y = img_y * (72.0 / dpi)
             text  = rec.get("text", "")
 
-            # Dedup & conflict suppression
-            has_b_or_node = any(
-                (c["text"] == "B" or "NODE" in c["text"]) and
-                math.hypot(pdf_x - c["pdf_x"], pdf_y - c["pdf_y"]) < DEDUP_RADIUS_PTS
-                for c in unique
-            )
-            if text == "A" and has_b_or_node:
-                continue
-
+            # Dedup
             if not any(
                 c["text"] == text and
                 math.hypot(pdf_x - c["pdf_x"], pdf_y - c["pdf_y"]) < DEDUP_RADIUS_PTS
