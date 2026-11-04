@@ -12,6 +12,7 @@ from pathlib import Path
 from app.models.schemas import JobStatus
 from app.services.alignment import align_and_pad_maps, iter_tiles, pdf_to_image
 from app.services.matching import match_objects
+from app.services.utils import deduplicate_global_callouts
 from app.services.rules import RuleEngine
 from app.services.reporting import generate_vector_report, generate_final_report
 from app.services.fiber_overview import FiberOverviewProcessor
@@ -28,6 +29,43 @@ def _pdf_to_bgr(p, dpi=300):
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. COAX PIPELINE
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _deduplicate_global_callouts(callouts: list[dict], dist_thresh_px: float = 120.0) -> list[dict]:
+    """
+    Deduplicates callouts that were detected across adjacent overlapping tiles.
+    1. Suppresses 'A' if 'B' (LE->Amp) or 'UPGRADE NODE' is within dist_thresh_px.
+    2. Merges duplicate identical callouts within dist_thresh_px (keeps first/highest confidence).
+    """
+    import math
+    priority_order = {"UPGRADE NODE": 0, "B": 1, "G": 2, "J": 3, "E, ADD TERM": 4, "A": 10}
+    sorted_callouts = sorted(callouts, key=lambda c: priority_order.get(c.get("text", "").strip(), 5))
+
+    kept: list[dict] = []
+    for c in sorted_callouts:
+        c_text = c.get("text", "").strip()
+        c_gx, c_gy = float(c.get("gx", 0)), float(c.get("gy", 0))
+
+        is_dup = False
+        for k in kept:
+            k_text = k.get("text", "").strip()
+            k_gx, k_gy = float(k.get("gx", 0)), float(k.get("gy", 0))
+            dist = math.hypot(c_gx - k_gx, c_gy - k_gy)
+
+            # Rule 1: Identical callouts within distance threshold (e.g. A vs A from overlapping tiles)
+            if c_text == k_text and dist < dist_thresh_px:
+                is_dup = True
+                break
+
+            # Rule 2: Suppress general 'A' if specific 'B' (LE->Amp) or 'UPGRADE NODE' is at the same symbol
+            if c_text == "A" and (k_text == "B" or "NODE" in k_text) and dist < dist_thresh_px:
+                is_dup = True
+                break
+
+        if not is_dup:
+            kept.append(c)
+
+    return kept
+
 
 def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
     detector = detector or kwargs.get("detector") or kwargs.get("processor")
@@ -228,7 +266,7 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                     gy = ty + loc_y
                     
                     text_upper = c["text"].upper()
-                    is_flagged = "WARNING" in text_upper or text_upper in ["G", "POWERBLOCK", "ADD POWER BLOCK", "REMOVE POWER BLOCK"]
+                    is_flagged = "WARNING" in text_upper or "NODE" in text_upper or "POWER" in text_upper or text_upper in ["G", "POWERBLOCK", "ADD POWER BLOCK", "REMOVE POWER BLOCK", "UPGRADE NODE", "J", "E, ADD TERM", "E, REMOVE TERM"]
                     if is_flagged:
                         tile_flagged = True
                     
@@ -261,6 +299,9 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                             torch.cuda.empty_cache()
                     except ImportError:
                         pass
+
+            # Deduplicate callouts across overlapping tiles before human review and report generation
+            callout_records = _deduplicate_global_callouts(callout_records, dist_thresh_px=120.0)
 
             # Save state and halt for human review
             # Extract unique tile indices that have flagged callouts

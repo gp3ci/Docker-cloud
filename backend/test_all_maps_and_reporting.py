@@ -17,6 +17,7 @@ from app.services.alignment import align_and_pad_maps, pdf_to_image, iter_tiles
 from app.services.matching import match_objects
 from app.services.rules import RuleEngine
 from app.services.reporting import generate_vector_report
+from app.services.utils import deduplicate_global_callouts
 
 def run_map_test(before_pdf: Path, after_pdf: Path, out_dir: Path, map_id: str, dpi: int = 150):
     print(f"\n=======================================================")
@@ -103,7 +104,9 @@ def run_map_test(before_pdf: Path, after_pdf: Path, out_dir: Path, map_id: str, 
             print(f"[{map_id}] Processed {idx + 1}/{total_tiles} tiles... Current callouts: {len(callout_records)}")
 
     print(f"[{map_id}] Detection Complete: {det_b_count} Before objects, {det_a_count} After objects.")
-    print(f"[{map_id}] Rule Engine Generated: {len(callout_records)} Callouts!")
+    print(f"[{map_id}] Rule Engine Generated: {len(callout_records)} Raw Callouts across tiles.")
+    callout_records = deduplicate_global_callouts(callout_records, dist_thresh_px=120.0)
+    print(f"[{map_id}] After Cross-Tile Deduplication: {len(callout_records)} Clean Callouts!")
 
     # Generate Vector Report PDF
     out_pdf = out_dir / f"{map_id}_annotated_report.pdf"

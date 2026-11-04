@@ -63,7 +63,16 @@ class TelecomDetector:
         self.internal_model = YOLO(str(internal_model_path))
 
         logger.info("Loading EasyOCR...")
-        self.reader = easyocr.Reader(["en"], gpu=use_gpu)
+        easyocr_cache = Path(__file__).resolve().parent.parent.parent / ".EasyOCR"
+        if (easyocr_cache / "model").exists():
+            self.reader = easyocr.Reader(
+                ["en"],
+                gpu=use_gpu,
+                model_storage_directory=str(easyocr_cache / "model"),
+                user_network_directory=str(easyocr_cache / "user_network"),
+            )
+        else:
+            self.reader = easyocr.Reader(["en"], gpu=use_gpu)
 
         # Configuration
         self.ROI_PADDING = 0.15
@@ -196,7 +205,7 @@ class TelecomDetector:
 
         # ── DPI-BASED THRESHOLDS (Calibrated for Retrained GPU Model) ──
         if self.dpi == 300:
-            node_thresh = 0.35
+            node_thresh = 0.50
             le_thresh = 0.25
             dual_amp_thresh = 0.25
             amp_3way_thresh = 0.35
@@ -299,6 +308,16 @@ class TelecomDetector:
                 continue
             if "3_way_amplifier" in cls_lower and obj["conf"] < amp_3way_thresh:
                 continue
+            if "amplifier" in cls_lower:
+                # Suppress amplifier if its centre is inside a valid node
+                is_inside_node = False
+                for node_obj in final_objects:
+                    if "node" in node_obj["cls"].lower() and node_obj["conf"] >= node_thresh:
+                        if is_center_inside(obj, node_obj):
+                            is_inside_node = True
+                            break
+                if is_inside_node:
+                    continue
             if "equalizer" in cls_lower and obj["conf"] < equalizer_thresh:
                 continue
 

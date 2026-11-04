@@ -158,8 +158,8 @@ export const AnalysisVerificationModal = ({
                  <div className="text-sm">
                     <p className="text-amber-200 font-medium">Attention Required</p>
                     <p className="text-amber-200/60 leading-relaxed">
-                       Our AI detected potential Grounding (G), Power Block, or Power Supply issues. 
-                       Please verify the flagged tiles below. You can rename or remove these callouts if they are incorrect.
+                       Our AI detected critical design changes (Grounding G, Power Block, Node Upgrades, or Power Supply).
+                       Compare the Before and After tiles side-by-side below. You can rename or remove these callouts if they are incorrect.
                     </p>
                  </div>
               </div>
@@ -167,14 +167,48 @@ export const AnalysisVerificationModal = ({
               <div className="grid grid-cols-1 gap-4">
                 {flaggedTiles.map((tileIdx) => (
                   <div key={tileIdx} className={`bg-slate-800/50 border border-slate-700 rounded-2xl p-4 flex flex-col gap-6 transition-opacity ${isRemoved(tileIdx) ? 'opacity-40 grayscale' : ''}`}>
-                    <div className="relative w-full aspect-square rounded-xl overflow-hidden border border-slate-600 bg-black flex-shrink-0">
-                       <img 
-                          src={getTileUrl(jobId, 'after', tileIdx)}
-                          alt="Flagged Frame" 
-                          className="w-full h-full object-cover"
-                       />
-                       <div className="absolute inset-0 flex items-center justify-center bg-slate-900/40 opacity-0 hover:opacity-100 transition-opacity">
-                          <a href={getTileUrl(jobId, 'after', tileIdx)} target="_blank" rel="noreferrer" className="text-[10px] bg-blue-600 text-white px-2 py-1 rounded">Open in New Tab</a>
+                    {/* Before & After Side-by-Side Comparison Grid */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 w-full">
+                       {/* Before Tile */}
+                       <div className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                             <span className="text-xs font-mono font-semibold text-slate-300 flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-slate-400 inline-block"></span> Before Map
+                             </span>
+                             <span className="text-[10px] text-slate-500 uppercase font-mono">Original</span>
+                          </div>
+                          <div className="relative aspect-square rounded-xl overflow-hidden border border-slate-700 bg-black group">
+                             <img 
+                                src={getTileUrl(jobId, 'before', tileIdx)}
+                                alt={`Before Tile #${tileIdx}`} 
+                                className="w-full h-full object-cover"
+                                onError={(e) => { e.target.style.display = 'none'; }}
+                             />
+                             <div className="absolute inset-0 flex items-center justify-center bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <a href={getTileUrl(jobId, 'before', tileIdx)} target="_blank" rel="noreferrer" className="text-[10px] bg-slate-700 hover:bg-slate-600 text-white px-2.5 py-1 rounded-lg font-medium shadow">Open Before in Tab</a>
+                             </div>
+                          </div>
+                       </div>
+
+                       {/* After Tile */}
+                       <div className="space-y-1.5">
+                          <div className="flex items-center justify-between">
+                             <span className="text-xs font-mono font-semibold text-sky-400 flex items-center gap-1.5">
+                                <span className="w-2 h-2 rounded-full bg-sky-400 inline-block"></span> After Map
+                             </span>
+                             <span className="text-[10px] text-sky-400/80 uppercase font-mono">Changes / Redlines</span>
+                          </div>
+                          <div className="relative aspect-square rounded-xl overflow-hidden border border-sky-800/60 bg-black group">
+                             <img 
+                                src={getTileUrl(jobId, 'after', tileIdx)}
+                                alt={`After Tile #${tileIdx}`} 
+                                className="w-full h-full object-cover"
+                                onError={(e) => { e.target.style.display = 'none'; }}
+                             />
+                             <div className="absolute inset-0 flex items-center justify-center bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity">
+                                <a href={getTileUrl(jobId, 'after', tileIdx)} target="_blank" rel="noreferrer" className="text-[10px] bg-blue-600 hover:bg-blue-500 text-white px-2.5 py-1 rounded-lg font-medium shadow">Open After in Tab</a>
+                             </div>
+                          </div>
                        </div>
                     </div>
                     <div className="flex-1 flex flex-col justify-center gap-4">
