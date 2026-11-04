@@ -13,6 +13,7 @@ from app.models.schemas import JobStatus
 from app.services.alignment import align_and_pad_maps, iter_tiles, pdf_to_image
 from app.services.matching import match_objects
 from app.services.rules import RuleEngine
+from app.services.utils import deduplicate_global_callouts
 from app.services.reporting import generate_vector_report, generate_final_report
 from app.services.fiber_overview import FiberOverviewProcessor
 from app.services.storage import download_from_storage, upload_to_storage
@@ -228,7 +229,7 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                     gy = ty + loc_y
                     
                     text_upper = c["text"].upper()
-                    is_flagged = "WARNING" in text_upper or text_upper in ["G", "POWERBLOCK", "ADD POWER BLOCK", "REMOVE POWER BLOCK"]
+                    is_flagged = "WARNING" in text_upper or "NODE" in text_upper or "POWER" in text_upper or text_upper in ["G", "POWERBLOCK", "ADD POWER BLOCK", "REMOVE POWER BLOCK", "UPGRADE NODE", "J", "E, ADD TERM", "E, REMOVE TERM"]
                     if is_flagged:
                         tile_flagged = True
                     
@@ -261,6 +262,9 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                             torch.cuda.empty_cache()
                     except ImportError:
                         pass
+
+            # Deduplicate callouts across overlapping tiles before human review and report generation
+            callout_records = deduplicate_global_callouts(callout_records, dist_thresh_px=120.0)
 
             # Save state and halt for human review
             # Extract unique tile indices that have flagged callouts

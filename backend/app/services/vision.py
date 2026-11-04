@@ -63,7 +63,16 @@ class TelecomDetector:
         self.internal_model = YOLO(str(internal_model_path))
 
         logger.info("Loading EasyOCR...")
-        self.reader = easyocr.Reader(["en"], gpu=use_gpu)
+        easyocr_cache = Path(__file__).resolve().parent.parent.parent / ".EasyOCR"
+        if (easyocr_cache / "model").exists():
+            self.reader = easyocr.Reader(
+                ["en"],
+                gpu=use_gpu,
+                model_storage_directory=str(easyocr_cache / "model"),
+                user_network_directory=str(easyocr_cache / "user_network"),
+            )
+        else:
+            self.reader = easyocr.Reader(["en"], gpu=use_gpu)
 
         # Configuration
         self.ROI_PADDING = 0.15
@@ -137,12 +146,23 @@ class TelecomDetector:
                     "splitter_dc",
                     "splitter",
                 ],
-                blocked_classes=["int_2way_splitter", "splitter_int_dc"],
+                blocked_classes=[
+                    "int_2way_splitter",
+                    "splitter_int_dc",
+                    "node",
+                    "power_block",
+                    "power_supply",
+                    "tap",
+                    "equalizer",
+                    "terminator",
+                    "splice",
+                    "booster",
+                ],
                 model_name="best_gpu_retrained_model.pt",
             )
             final_objects.extend(objs_retrained)
 
-            # 1b. Baseline Model (best.pt) → Taps, Equalizers, Terminators, Splices, Boosters
+            # 1b. Baseline Model (best.pt) → Taps, Equalizers, Terminators, Splices, Boosters, Power Supply
             results_main = self.model(img, verbose=False, conf=conf_threshold)[0]
             objs_main = process_results(
                 results_main,
@@ -153,6 +173,7 @@ class TelecomDetector:
                     "terminator",
                     "splice",
                     "booster",
+                    "power_supply",
                 ],
                 blocked_classes=["node", "power_block", "amplifier", "splitter", "line_extender"],
                 model_name="best.pt",
@@ -196,7 +217,7 @@ class TelecomDetector:
 
         # ── DPI-BASED THRESHOLDS (Calibrated for Retrained GPU Model) ──
         if self.dpi == 300:
-            node_thresh = 0.35
+            node_thresh = 0.50
             le_thresh = 0.25
             dual_amp_thresh = 0.25
             amp_3way_thresh = 0.35
@@ -299,6 +320,16 @@ class TelecomDetector:
                 continue
             if "3_way_amplifier" in cls_lower and obj["conf"] < amp_3way_thresh:
                 continue
+            if "amplifier" in cls_lower:
+                # Suppress amplifier if its centre is inside a valid node
+                is_inside_node = False
+                for node_obj in final_objects:
+                    if "node" in node_obj["cls"].lower() and node_obj["conf"] >= node_thresh:
+                        if is_center_inside(obj, node_obj):
+                            is_inside_node = True
+                            break
+                if is_inside_node:
+                    continue
             if "equalizer" in cls_lower and obj["conf"] < equalizer_thresh:
                 continue
 
@@ -371,12 +402,12 @@ class TelecomDetector:
                 x2, y2 = min(w, x2 + pad), min(h, y2 + pad)
                 obj["bbox"] = [x1, y1, x2, y2]
 
-            # Internal splitters MUST be inside an amplifier from best.pt
+            # Internal splitters MUST be inside an amplifier
             if ("int_2way_splitter" in cls_lower or "splitter_int_dc" in cls_lower) \
                     and obj.get("model") == "Internal_best.pt":
                 is_inside_amp = False
                 for main_obj in final_objects:
-                    if "amplifier" in main_obj["cls"].lower() and main_obj.get("model") == "best.pt":
+                    if "amplifier" in main_obj["cls"].lower():
                         if is_center_inside(obj, main_obj):
                             is_inside_amp = True
                             break
@@ -421,9 +452,9 @@ class TelecomDetector:
                         is_dup = False
                         break
 
-                    # Allow overlap between Internal and main model if classes differ
-                    if (obj.get("model") == "Internal_best.pt" and k.get("model") == "best.pt") or \
-                       (k.get("model") == "Internal_best.pt" and obj.get("model") == "best.pt"):
+                    # Allow overlap between Internal and amplifier if classes differ
+                    if (obj.get("model") == "Internal_best.pt" and "amplifier" in k["cls"].lower()) or \
+                       (k.get("model") == "Internal_best.pt" and "amplifier" in obj["cls"].lower()):
                         if obj["cls"] != k["cls"]:
                             continue
 
