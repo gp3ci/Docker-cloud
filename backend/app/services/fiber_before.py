@@ -107,8 +107,24 @@ def run_fiber_before_pipeline(
                 page_num=pg_idx + 1,
                 total_pages=total_pages,
             )
+
+        # Patch appearance streams for title box font preservation (34pt)
+        for page_idx in range(doc.page_count):
+            p = doc[page_idx]
+            for a in list(p.annots()):
+                if a.type[0] == 2:
+                    xref = a.xref
+                    doc.xref_set_key(xref, "F", "4")
+                    doc.xref_set_key(xref, "BS", "<< /W 2.5 /S /S >>")
+                    doc.xref_set_key(xref, "C", "[1 0 0]")
+                    doc.xref_set_key(xref, "IC", "[1 1 0]")
+                    doc.xref_set_key(xref, "DA", "(0 0 0 rg /Helv 34 Tf)")
+                    doc.xref_set_key(
+                        xref, "DS",
+                        "(font: Helv 34pt; color: #000000; background-color: #FFFF00; border: 2.5pt solid #FF0000;)"
+                    )
         
-        doc.save(str(report_path), deflate=True, garbage=4, clean=True, linear=False)
+        doc.save(str(report_path), deflate=True, clean=False)
         doc.close()
         t0 = _record("REPORTING", t0)
 

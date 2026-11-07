@@ -229,7 +229,19 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                     gy = ty + loc_y
                     
                     text_upper = c["text"].upper()
-                    is_flagged = "WARNING" in text_upper or "NODE" in text_upper or "POWER" in text_upper or text_upper in ["G", "POWERBLOCK", "ADD POWER BLOCK", "REMOVE POWER BLOCK", "UPGRADE NODE", "J", "E, ADD TERM", "E, REMOVE TERM"]
+                    desc = c.get("desc", "")
+                    
+                    # Analysis Verification Modal whitelist:
+                    # 1. G (Splitter Change)
+                    # 2. Powerblock (ADD POWER BLOCK, REMOVE POWER BLOCK, POWERBLOCK)
+                    # 3. Warning when power supply detected (WARNING: Power Supply Detected, POWER SUPPLY OVER 80%)
+                    # 4. Tap with alphabet / eqz writing only detected
+                    is_g = (text_upper == "G")
+                    is_powerblock = ("POWERBLOCK" in text_upper or "POWER BLOCK" in text_upper)
+                    is_ps_warning = ("POWER SUPPLY" in text_upper and ("WARNING" in text_upper or "OVER 80%" in text_upper)) or (text_upper == "WARNING: POWER SUPPLY DETECTED")
+                    is_tap_warning = (desc == "Alphabet in Tap Label") or ("WARNING" in text_upper and ("TAP" in text_upper or any(x in text_upper for x in ["EQ", "EQZ"])))
+                    
+                    is_flagged = is_g or is_powerblock or is_ps_warning or is_tap_warning
                     if is_flagged:
                         tile_flagged = True
                     
@@ -240,6 +252,7 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                         "lx": loc_x,  # kept for compat
                         "ly": loc_y,
                         "text": c["text"],
+                        "desc": desc,
                         "type": "FLAGGED" if is_flagged else "NORMAL"
                     })
 

@@ -14,14 +14,15 @@ from app.services.alignment import pdf_to_image
 def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 10, is_callout: bool = True) -> None:
     """Patches annotation dictionary keys directly via xref so MuPDF does not mark annotations as dirty."""
     try:
+        border_w = "1" if is_callout else "2.5"
         doc.xref_set_key(annot.xref, "F", "4") # fitz.PDF_ANNOT_IS_PRINT
-        doc.xref_set_key(annot.xref, "BS", "<< /W 2.5 /S /S >>") # 2.5pt solid border style
+        doc.xref_set_key(annot.xref, "BS", f"<< /W {border_w} /S /S >>") # 1pt for callouts, 2.5pt for title box
         doc.xref_set_key(annot.xref, "C", "[1 0 0]") # Red stroke
         doc.xref_set_key(annot.xref, "IC", "[1 1 0]") # Yellow fill
         doc.xref_set_key(annot.xref, "DA", f"(0 0 0 rg /Helv {font_size} Tf)")
         doc.xref_set_key(
             annot.xref, "DS",
-            f"(font: Helv {font_size}pt; color: #000000; background-color: #FFFF00; border: 2.5pt solid #FF0000;)"
+            f"(font: Helv {font_size}pt; color: #000000; background-color: #FFFF00; border: {border_w}pt solid #FF0000;)"
         )
         
         if is_callout:
@@ -31,6 +32,54 @@ def _patch_annot_color(doc: fitz.Document, annot: fitz.Annot, font_size: int = 1
             doc.xref_set_key(annot.xref, "IT", "/FreeText")
     except Exception as e:
         logger.warning(f"Error patching annotation {annot.xref}: {e}")
+
+
+def _stamp_movable_image(page: fitz.Page, rect: fitz.Rect, img_path: Path | str) -> bool:
+    """
+    Stamps an image as an interactive, movable and selectable PDF Stamp Annotation (/Stamp).
+    This allows users in Adobe Acrobat or Bluebeam to click, move, resize, or delete the screenshot.
+    """
+    try:
+        doc = page.parent
+        with open(str(img_path), "rb") as f:
+            img_bytes = f.read()
+
+        annot = page.add_stamp_annot(rect)
+        annot.set_rect(rect)
+        annot.set_flags(4)  # fitz.PDF_ANNOT_IS_PRINT
+        annot.update()
+
+        # Insert image into document off-screen to generate an image XObject xref
+        img_xref = page.insert_image(fitz.Rect(-5000, -5000, -4900, -4850), stream=img_bytes)
+
+        w = rect.width
+        h = rect.height
+        form_stream = f"q {w:.2f} 0 0 {h:.2f} 0 0 cm /Im0 Do Q\n".encode("ascii")
+
+        form_xref = doc.get_new_xref()
+        form_dict = f"""<<
+  /Type /XObject
+  /Subtype /Form
+  /BBox [ 0 0 {w:.2f} {h:.2f} ]
+  /Matrix [ 1 0 0 1 0 0 ]
+  /Resources <<
+    /XObject <<
+      /Im0 {img_xref} 0 R
+    >>
+  >>
+>>"""
+        doc.update_object(form_xref, form_dict)
+        doc.update_stream(form_xref, form_stream)
+        doc.xref_set_key(annot.xref, "AP", f"<< /N {form_xref} 0 R >>")
+        return True
+    except Exception as e:
+        logger.warning(f"Could not stamp movable image: {e}, falling back to direct page insert")
+        try:
+            page.insert_image(rect, filename=str(img_path))
+            return True
+        except Exception as e2:
+            logger.error(f"Failed to insert image: {e2}")
+            return False
 
 logger = logging.getLogger(__name__)
 
@@ -373,7 +422,7 @@ def generate_vector_report(
             placed_rects.append(text_rect)
             hard_rects.append(text_rect)
 
-            # ── Arrow geometry with structured horizontal knee bending ────────
+            # ── Arrow geometry (conditional straight line vs knee bend) ───────
             angle = math.atan2(cy_pdf - ey_pdf, cx_pdf - ex_pdf)
             offset_pts = ARROW_OFFSET_PTS  # Dynamically set based on DPI to prevent overlap
             tip_x = cx_pdf - offset_pts * math.cos(angle)
@@ -391,21 +440,45 @@ def generate_vector_report(
                 knee_x = attach_x + 12.0 # 12pt horizontal shoulder
                 knee_y = attach_y
 
+            # Check if straight line from tip to attach crosses any dark pixels (writing/symbols)
+            line_blocked = False
+            pts_x = np.linspace(tip_x * (dpi / 72.0), attach_x * (dpi / 72.0), 12)
+            pts_y = np.linspace(tip_y * (dpi / 72.0), attach_y * (dpi / 72.0), 12)
+            for lpx, lpy in zip(pts_x[1:-1], pts_y[1:-1]):
+                ilx, ily = int(lpx), int(lpy)
+                if 0 <= ilx < w_img and 0 <= ily < h_img:
+                    if img_gray[ily, ilx] < 210:
+                        line_blocked = True
+                        break
+
+            is_vertically_aligned = abs(cy_pdf - ey_pdf) < 20.0
+            is_horizontally_aligned = abs(cx_pdf - ex_pdf) < 20.0
+
+            if not line_blocked and (is_vertically_aligned or is_horizontally_aligned):
+                # Straight 2-point arrow when directly aligned and clear path
+                callout_pts = [fitz.Point(tip_x, tip_y), fitz.Point(attach_x, attach_y)]
+            elif not line_blocked and abs(cy_pdf - ey_pdf) < 35.0:
+                # Straight 2-point arrow when small vertical delta and clear path
+                callout_pts = [fitz.Point(tip_x, tip_y), fitz.Point(attach_x, attach_y)]
+            else:
+                # 3-point knee bend when significant offset or routing around writing/symbols
+                callout_pts = [fitz.Point(tip_x, tip_y), fitz.Point(knee_x, knee_y), fitz.Point(attach_x, attach_y)]
+
             # ── Draw annotation ───────────────────────────────────────────────
             try:
                 annot = page.add_freetext_annot(
                     text_rect, c["text"], fontsize=CALLOUT_FONT_SIZE, fontname="helv",
                     text_color=(0, 0, 0), fill_color=(1, 1, 0),
-                    callout=[fitz.Point(tip_x, tip_y), fitz.Point(knee_x, knee_y), fitz.Point(attach_x, attach_y)],
+                    callout=callout_pts,
                     align=1,
                 )
 
                 try:
-                    annot.set_border(width=2.5)
+                    annot.set_border(width=1.0)
                 except Exception:
                     pass
                 annot.update()
-                _patch_annot_color(doc, annot, font_size=CALLOUT_FONT_SIZE)
+                _patch_annot_color(doc, annot, font_size=CALLOUT_FONT_SIZE, is_callout=True)
             except Exception as err:
                 logger.warning(f"Could not place callout '{text}': {err}")
 
@@ -427,15 +500,19 @@ def generate_vector_report(
         for a in list(p.annots()):
             if a.type[0] == 2:  # FreeText / FreeTextCallout
                 xref = a.xref
+                _, it_val = doc.xref_get_key(xref, "IT")
+                is_callout = (it_val == "/FreeTextCallout")
+                f_size = CALLOUT_FONT_SIZE if is_callout else title_font_size
+                border_w = "1" if is_callout else "2.5"
                 # Direct low-level xref dictionary modifications to preserve custom AP stream
                 doc.xref_set_key(xref, "F", "4")  # fitz.PDF_ANNOT_IS_PRINT
-                doc.xref_set_key(xref, "BS", "<< /W 2.5 /S /S >>")  # 2.5pt solid border
+                doc.xref_set_key(xref, "BS", f"<< /W {border_w} /S /S >>")  # 1pt for callouts, 2.5pt for title box
                 doc.xref_set_key(xref, "C", "[1 0 0]")  # Stroke: Red
                 doc.xref_set_key(xref, "IC", "[1 1 0]")  # Interior/Fill: Yellow
-                doc.xref_set_key(xref, "DA", "(0 0 0 rg /Helv 10 Tf)")
+                doc.xref_set_key(xref, "DA", f"(0 0 0 rg /Helv {f_size} Tf)")
                 doc.xref_set_key(
                     xref, "DS",
-                    "(font: Helv 10pt; color: #000000; background-color: #FFFF00; border: 2.5pt solid #FF0000;)"
+                    f"(font: Helv {f_size}pt; color: #000000; background-color: #FFFF00; border: {border_w}pt solid #FF0000;)"
                 )
                 ap_type, ap_val = doc.xref_get_key(xref, "AP")
                 if ap_val and "/N" in ap_val:
@@ -447,10 +524,15 @@ def generate_vector_report(
                         patched = re.sub(rb"\d+\.?\d*\s+\d+\.?\d*\s+\d+\.?\d*\s+RG", b"1 0 0 RG", raw)
                         # 2. Replace Grayscale stroke (e.g. 0 G) with red RGB stroke (1 0 0 RG)
                         patched = re.sub(rb"(?<!\w)\d+\.?\d*\s+G\b", b"1 0 0 RG", patched)
-                        # 3. Ensure stroke width is at least 2.5pt
-                        patched = re.sub(rb"\b0\s+w\b", b"2.5 w", patched)
-                        patched = re.sub(rb"\b1\.5\s+w\b", b"2.5 w", patched)
-                        patched = re.sub(rb"\b1\s+w\b", b"2.5 w", patched)
+                        # 3. Stroke width: 1pt for callouts, 2.5pt for title box
+                        if is_callout:
+                            patched = re.sub(rb"\b2\.5\s+w\b", b"1 w", patched)
+                            patched = re.sub(rb"\b1\.5\s+w\b", b"1 w", patched)
+                            patched = re.sub(rb"\b0\s+w\b", b"1 w", patched)
+                        else:
+                            patched = re.sub(rb"\b0\s+w\b", b"2.5 w", patched)
+                            patched = re.sub(rb"\b1\.5\s+w\b", b"2.5 w", patched)
+                            patched = re.sub(rb"\b1\s+w\b", b"2.5 w", patched)
                         # 4. If fill-only rect without stroke exists, convert 're \n f' to 're \n B' (fill & stroke)
                         if b" re\nS" not in patched and b" re\r\nS" not in patched and b" re S" not in patched and b" re\nf\n" in patched:
                             patched = re.sub(rb"(\d+\.?\d*\s+\d+\.?\d*\s+\d+\.?\d*\s+\d+\.?\d*\s+re\s*\r?\n\s*)f\b", rb"\g<1>B", patched)
@@ -504,37 +586,36 @@ def _draw_legend_stack(
     title_box_data: dict | None,
     title_font_size: int = 24,
     margin_pts: float = 15.0,
-    include_legend: bool = False,  # Added for compatibility with fiber_before call
+    include_legend: bool = False,
     page_num: int = 1,
     total_pages: int = 1,
-    **kwargs,                      # Catch extra args like img_gray, callouts, dpi
+    **kwargs,
 ):
     """
-    Stamps the survey screenshot and Prism info title box in the top-right corner.
-    For FIBER SCHEMATIC, places it in the bottom-right corner.
-
-    Title box lines (matching reference design):
-        PID: <prism_id>
-        NODE: <node_name>
-        INSTANCE: <instance>
-        <map_type>
-        PG 1 OF N
+    Stamps the survey screenshot and Prism info title box.
+    Placement rules:
+      - Evaluates all 4 corners (TL, TR, BL, BR) to find the corner with the most white space.
+      - If screenshot is in top corner (TL or TR), text box is placed directly below it.
+      - If screenshot is in bottom corner (BL or BR), text box is placed next to it side-by-side.
+      - Screenshot is stamped as an interactive, movable Stamp annotation.
+      - Title box is stamped as an interactive, movable FreeText annotation.
+      - For remaining pages (page_num > 1), ONLY the text box appears in the top corner (TR).
     """
     page_r = page.rect
-    BOX_RIGHT_MARGIN = margin_pts          # from right edge
+    pw, ph = page_r.width, page_r.height
+    gap = 8.0
+    margin = margin_pts
 
     # ── Extract title fields ───────────────────────────────────────────────────
     pid      = ""
     node     = ""
     inst     = ""
     map_type = ""
-    pg_count = 1
     if title_box_data:
         pid      = title_box_data.get("prism_id", "")
         node     = title_box_data.get("node_name", "")
         inst     = title_box_data.get("instance", "")
         map_type = title_box_data.get("map_type", "")
-        pg_count = title_box_data.get("page_count", 1)
 
     print_name = ""
     if map_type:
@@ -562,8 +643,7 @@ def _draw_legend_stack(
     # ── Measure text dimensions to scale image properly ────────────────────────
     font_size   = title_font_size
     line_h      = font_size * 1.5
-    
-    # Exclusively shrink the box padding for Fiber Overview maps
+
     if "OVERVIEW" in map_type.upper():
         pad_w, pad_h = font_size * 0.8, font_size * 0.8
     else:
@@ -575,11 +655,11 @@ def _draw_legend_stack(
     box_w = max_line_w + pad_w
     box_h = line_h * len(lines) + pad_h if title_box_data else 0
 
-    # ── Survey screenshot ──────────────────────────────────────────────────────
+    # ── Survey screenshot dimensions ───────────────────────────────────────────
     ss_w = 0.0
     ss_h = 0.0
-    if survey_image_path:
-        # Make the screenshot width at least 800, or larger than the text box by 50%
+    has_screenshot = bool(survey_image_path and Path(survey_image_path).exists() and page_num == 1)
+    if has_screenshot:
         if "SCHEMATIC" in map_type.upper():
             target_ss_w = max(1200.0, box_w * 2.0)
         elif "OVERVIEW" in map_type.upper():
@@ -590,56 +670,103 @@ def _draw_legend_stack(
             tmp = fitz.open(str(survey_image_path))
             ir = tmp[0].rect
             tmp.close()
-            ss_w   = target_ss_w
-            ss_h   = (ir.height / ir.width) * ss_w
+            ss_w = min(target_ss_w, pw * 0.45)
+            ss_h = (ir.height / ir.width) * ss_w
         except Exception:
-            ss_w = target_ss_w
-            ss_h = target_ss_w * 0.66
+            ss_w = min(target_ss_w, pw * 0.45)
+            ss_h = ss_w * 0.66
 
     # ── Legend Size ────────────────────────────────────────────────────────────
     if "COAX" in map_type.upper() and ss_w > 0:
         leg_scale = (ss_w / 7.5) / 260.0
     else:
         leg_scale = title_font_size / 14.0
-        
+
     leg_line_h = 18 * leg_scale
     leg_col_w = [35 * leg_scale, 120 * leg_scale, 35 * leg_scale]
     leg_w = sum(leg_col_w)
     leg_h = leg_line_h * (len(LEGEND_DATA) + 1) if include_legend else 0
-            
-    # ── Determine starting Y position ──────────────────────────────────────────
-    if "SCHEMATIC" in map_type.upper():
-        total_h = (box_h + 8.0 if box_h > 0 else 0) + leg_h
-        curr_y = page_r.y1 - margin_pts - total_h
+
+    # ── Determine Placement Coordinates ────────────────────────────────────────
+    if not has_screenshot or ss_h == 0:
+        # Remaining pages (page_num > 1) or no screenshot: Top corner (TR) text box only
+        box_rect = fitz.Rect(pw - box_w - margin, margin, pw - margin, margin + box_h)
+        ss_rect = None
+        leg_rect = fitz.Rect(pw - leg_w - margin, margin + box_h + gap, pw - margin, margin + box_h + gap + leg_h) if include_legend else None
     else:
-        curr_y = page_r.y0 + margin_pts
+        # Page 1 with screenshot: evaluate all 4 corners (TL, TR, BL, BR)
+        candidates = {
+            "TL": {
+                "ss": fitz.Rect(margin, margin, margin + ss_w, margin + ss_h),
+                "box": fitz.Rect(margin, margin + ss_h + gap, margin + box_w, margin + ss_h + gap + box_h),
+                "leg": fitz.Rect(margin, margin + ss_h + gap + box_h + gap, margin + leg_w, margin + ss_h + gap + box_h + gap + leg_h) if include_legend else None,
+                "roi": fitz.Rect(margin, margin, margin + max(ss_w, box_w, leg_w if include_legend else 0), margin + ss_h + gap + box_h + (gap + leg_h if include_legend else 0)),
+            },
+            "TR": {
+                "ss": fitz.Rect(pw - ss_w - margin, margin, pw - margin, margin + ss_h),
+                "box": fitz.Rect(pw - box_w - margin, margin + ss_h + gap, pw - margin, margin + ss_h + gap + box_h),
+                "leg": fitz.Rect(pw - leg_w - margin, margin + ss_h + gap + box_h + gap, pw - margin, margin + ss_h + gap + box_h + gap + leg_h) if include_legend else None,
+                "roi": fitz.Rect(pw - max(ss_w, box_w, leg_w if include_legend else 0) - margin, margin, pw - margin, margin + ss_h + gap + box_h + (gap + leg_h if include_legend else 0)),
+            },
+            "BL": {
+                "ss": fitz.Rect(margin, ph - margin - ss_h, margin + ss_w, ph - margin),
+                "box": fitz.Rect(margin + ss_w + gap, ph - margin - box_h, margin + ss_w + gap + box_w, ph - margin),
+                "leg": fitz.Rect(margin + ss_w + gap, ph - margin - box_h - gap - leg_h, margin + ss_w + gap + leg_w, ph - margin - box_h - gap) if include_legend else None,
+                "roi": fitz.Rect(margin, ph - margin - max(ss_h, box_h + (gap + leg_h if include_legend else 0)), margin + ss_w + gap + max(box_w, leg_w if include_legend else 0), ph - margin),
+            },
+            "BR": {
+                "ss": fitz.Rect(pw - margin - ss_w, ph - margin - ss_h, pw - margin, ph - margin),
+                "box": fitz.Rect(pw - margin - ss_w - gap - box_w, ph - margin - box_h, pw - margin - ss_w - gap, ph - margin),
+                "leg": fitz.Rect(pw - margin - ss_w - gap - max(box_w, leg_w), ph - margin - box_h - gap - leg_h, pw - margin - ss_w - gap, ph - margin - box_h - gap) if include_legend else None,
+                "roi": fitz.Rect(pw - margin - ss_w - gap - max(box_w, leg_w if include_legend else 0), ph - margin - max(ss_h, box_h + (gap + leg_h if include_legend else 0)), pw - margin, ph - margin),
+            },
+        }
 
-    if survey_image_path and ss_h > 0:
-        if "SCHEMATIC" in map_type.upper():
-            ss_rect = fitz.Rect(
-                page_r.x0 + margin_pts, page_r.y1 - margin_pts - ss_h,
-                page_r.x0 + margin_pts + ss_w, page_r.y1 - margin_pts,
-            )
-            page.insert_image(ss_rect, filename=str(survey_image_path))
-        else:
-            is_overview = "OVERVIEW" in map_type.upper()
-            top_m = page_r.y0 + 5.0 if is_overview else curr_y
-            right_m = 5.0 if is_overview else BOX_RIGHT_MARGIN
-            ss_rect = fitz.Rect(
-                page_r.width - ss_w - right_m, top_m,
-                page_r.width - right_m,        top_m + ss_h,
-            )
-            page.insert_image(ss_rect, filename=str(survey_image_path))
-            curr_y = top_m + ss_h + 8.0
+        # Analyze raster brightness in each corner
+        best_corner = "TR"
+        try:
+            pix = page.get_pixmap(dpi=100)
+            if pix.n == 4:
+                gray = cv2.cvtColor(np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, 4), cv2.COLOR_RGBA2GRAY)
+            else:
+                gray = cv2.cvtColor(np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n), cv2.COLOR_RGB2GRAY)
+            scale = 100.0 / 72.0
 
-    if title_box_data:
-        # ── Draw yellow title box as an interactive movable PDF FreeText Annotation ──
-        if "SCHEMATIC" in map_type.upper():
-            box_x0 = page_r.x0 + margin_pts + ss_w + 15.0
-        else:
-            box_x0 = page_r.width - box_w - BOX_RIGHT_MARGIN
-        box_rect = fitz.Rect(box_x0, curr_y, box_x0 + box_w, curr_y + box_h)
-        
+            scores = {}
+            for name, cfg in candidates.items():
+                r = cfg["roi"]
+                x0 = max(0, int(r.x0 * scale))
+                y0 = max(0, int(r.y0 * scale))
+                x1 = min(gray.shape[1], int(r.x1 * scale))
+                y1 = min(gray.shape[0], int(r.y1 * scale))
+                roi = gray[y0:y1, x0:x1]
+                if roi.size == 0:
+                    scores[name] = 0.0
+                else:
+                    w_ratio = float(np.mean(roi >= 250))
+                    m_val = float(np.mean(roi))
+                    scores[name] = w_ratio * 1000.0 + m_val
+
+            # If TR has plenty of white space, prefer TR
+            if scores.get("TR", 0) >= 980.0:
+                best_corner = "TR"
+            else:
+                best_corner = max(scores, key=lambda k: scores[k])
+            logger.info(f"Page {page_num} chosen corner: {best_corner} (scores: {scores})")
+        except Exception as e:
+            logger.warning(f"Whitest corner detection fallback to TR: {e}")
+            best_corner = "TR"
+
+        ss_rect = candidates[best_corner]["ss"]
+        box_rect = candidates[best_corner]["box"]
+        leg_rect = candidates[best_corner]["leg"]
+
+    # ── 1. Draw Movable Survey Screenshot (Stamp Annotation) ──────────────────
+    if ss_rect and survey_image_path:
+        _stamp_movable_image(page, ss_rect, survey_image_path)
+
+    # ── 2. Draw Movable Title Box (FreeText Annotation) ───────────────────────
+    if title_box_data and box_rect:
         box_text = "\n".join(lines)
         try:
             annot = page.add_freetext_annot(
@@ -659,17 +786,12 @@ def _draw_legend_stack(
             _patch_annot_color(page.parent, annot, font_size=font_size, is_callout=False)
         except Exception as err:
             logger.warning(f"Could not place title box: {err}")
-        
-        curr_y += box_h + 8.0
 
-    if include_legend:
-        # ── Draw Legend Table ──────────────────────────────────────────────────────
-        if "SCHEMATIC" in map_type.upper():
-            leg_x0 = page_r.x0 + margin_pts + ss_w + 15.0
-        else:
-            leg_x0 = page_r.width - leg_w - BOX_RIGHT_MARGIN
-        bg = fitz.Rect(leg_x0, curr_y, leg_x0 + leg_w, curr_y + leg_h)
-        page.draw_rect(bg, color=(1, 0, 0), fill=(1, 1, 1), width=2.5)
+    # ── 3. Draw Legend Table if requested ──────────────────────────────────────
+    if include_legend and leg_rect:
+        leg_x0 = leg_rect.x0
+        curr_y = leg_rect.y0
+        page.draw_rect(leg_rect, color=(1, 0, 0), fill=(1, 1, 1), width=2.5)
 
         counts = {k: 0 for k in LEGEND_DATA}
         callouts = kwargs.get("callouts", [])
@@ -683,7 +805,7 @@ def _draw_legend_stack(
         ry = curr_y
         hdr_font = max(8, int(11 * leg_scale))
         val_font = max(8, int(10 * leg_scale))
-        
+
         for i, hdr in enumerate(["Code", "Action", "Count"]):
             xc = leg_x0 + sum(leg_col_w[:i])
             cr = fitz.Rect(xc, ry, xc + leg_col_w[i], ry + leg_line_h)

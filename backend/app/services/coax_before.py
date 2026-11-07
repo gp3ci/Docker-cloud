@@ -89,149 +89,51 @@ def _overlay_on_pdf(
     output_path: Path,
 ) -> None:
     """
-    Core overlay function. Mirrors overlay_tool.py business logic.
+    Core overlay function. Uses unified 4-corner whitest placement with
+    movable Stamp survey image and movable FreeText title box.
     """
+    from app.services.reporting import _draw_legend_stack
+
     doc = fitz.open(str(pdf_path))
-    page_orig = doc[0]
     total_pages = doc.page_count
 
-    # ── Image dimensions ──────────────────────────────────────────
-    ss_w_pts, ss_h_pts = 0.0, 0.0
-    if screenshot_path and screenshot_path.exists():
-        temp_doc = fitz.open(str(screenshot_path))
-        ir = temp_doc[0].rect
-        ss_w_pts = 700.0
-        ss_h_pts = (ir.height / ir.width) * ss_w_pts
-        temp_doc.close()
+    title_box_data = {
+        "prism_id": prism_id,
+        "node_name": node_name,
+        "instance": instance,
+        "map_type": map_type if map_type else "BEFORE PRINT",
+        "page_count": total_pages,
+    }
 
-    # ── Text box ─────────────────────────────────────────────────
-    text_lines = []
-    if prism_id:
-        text_lines.append(prism_id)
-    if node_name:
-        text_lines.append(node_name)
-    if instance:
-        text_lines.append(instance)
-    text_lines.append(map_type if map_type else "BEFORE PRINT")
-    text_lines.append(f"PG 1 OF {total_pages}")
-
-    text_content = "\n".join(text_lines)
-    font_size = 24
-    line_height = font_size + 8
-    padding_w, padding_h = 30, 25
-
-    max_line_w = max(
-        (fitz.get_text_length(line, fontname="helv", fontsize=font_size) for line in text_lines),
-        default=100.0,
-    )
-    text_box_w = max_line_w + padding_w
-    text_box_h = line_height * len(text_lines) + padding_h
-
-    gap = 10.0
-    full_overlay_h = ss_h_pts + text_box_h + gap if ss_h_pts > 0 else text_box_h
-
-    # ── Corner detection ──────────────────────────────────────────
-    effective_w = max(ss_w_pts, text_box_w)
-    start_x, start_y, needs_ext = _get_best_corner(
-        page_orig, effective_w, full_overlay_h
-    )
-
-    # ── Handle page extension ─────────────────────────────────────
-    if needs_ext:
-        logger.info("Extending map page upward to create overlay space.")
-        ext_h = full_overlay_h + 100
-        old_rect = page_orig.rect
-        new_height = old_rect.height + ext_h
-
-        new_doc = fitz.open()
-        new_page = new_doc.new_page(width=old_rect.width, height=new_height)
-        new_page.show_pdf_page(
-            fitz.Rect(0, ext_h, old_rect.width, new_height), doc, 0
-        )
-        doc.delete_page(0)
-        doc.insert_pdf(new_doc, from_page=0, to_page=0, start_at=0)
-        new_doc.close()
-
-        page = doc[0]
-        start_x, start_y = 30.0, 50.0
-        is_bottom = False
-    else:
-        page = page_orig
-        is_bottom = start_y > (page.rect.height / 2)
-
-    # ── Define rects ──────────────────────────────────────────────
-    if ss_w_pts > 0:
-        # Align text box to the outer page edge:
-        # If screenshot is on the left half, align text box to the left edge of the screenshot (start_x).
-        # If screenshot is on the right half, align text box to the right edge of the screenshot (start_x + ss_w_pts - text_box_w).
-        page_width = page_orig.rect.width
-        if (start_x + ss_w_pts / 2.0) < (page_width / 2.0):
-            x_offset = start_x
-        else:
-            x_offset = start_x + ss_w_pts - text_box_w
-    else:
-        x_offset = start_x
-
-    if is_bottom:
-        # Text box on top, image below
-        text_rect = fitz.Rect(x_offset, start_y, x_offset + text_box_w, start_y + text_box_h)
-        ss_rect = fitz.Rect(
-            start_x, start_y + text_box_h + gap,
-            start_x + ss_w_pts, start_y + text_box_h + gap + ss_h_pts
-        )
-    else:
-        # Image on top (standard), text box below
-        ss_rect = fitz.Rect(start_x, start_y, start_x + ss_w_pts, start_y + ss_h_pts)
-        text_rect = fitz.Rect(
-            x_offset, start_y + ss_h_pts + gap,
-            x_offset + text_box_w, start_y + ss_h_pts + gap + text_box_h
+    for pg_idx in range(total_pages):
+        page = doc[pg_idx]
+        _draw_legend_stack(
+            page=page,
+            survey_image_path=screenshot_path if pg_idx == 0 else None,
+            title_box_data=title_box_data,
+            title_font_size=24,
+            include_legend=False,
+            page_num=pg_idx + 1,
+            total_pages=total_pages,
         )
 
-    # ── Draw onto page 0 (Survey Image + Text) ────────────────────
-    if screenshot_path and screenshot_path.exists() and ss_h_pts > 0:
-        page.insert_image(ss_rect, filename=str(screenshot_path))
+    # Patch appearance streams for title box font preservation
+    for page_idx in range(doc.page_count):
+        p = doc[page_idx]
+        for a in list(p.annots()):
+            if a.type[0] == 2:
+                xref = a.xref
+                doc.xref_set_key(xref, "F", "4")
+                doc.xref_set_key(xref, "BS", "<< /W 2.5 /S /S >>")
+                doc.xref_set_key(xref, "C", "[1 0 0]")
+                doc.xref_set_key(xref, "IC", "[1 1 0]")
+                doc.xref_set_key(xref, "DA", "(0 0 0 rg /Helv 24 Tf)")
+                doc.xref_set_key(
+                    xref, "DS",
+                    "(font: Helv 24pt; color: #000000; background-color: #FFFF00; border: 2.5pt solid #FF0000;)"
+                )
 
-    # Yellow fill, red border (1.5 pt) — matches all other map types
-    page.draw_rect(text_rect, color=(1, 0, 0), fill=(1, 1, 0), width=1.5)
-    page.insert_textbox(
-        text_rect,
-        text_content,
-        fontsize=font_size,
-        fontname="helv",
-        color=(0, 0, 0),
-        align=0,
-    )
-    
-    # ── Draw text box onto all remaining pages ─────────────────────
-    for pg_idx in range(1, total_pages):
-        current_page = doc[pg_idx]
-        
-        # Recalculate text for this specific page number
-        lines_copy = list(text_lines)
-        lines_copy[-1] = f"PG {pg_idx + 1} OF {total_pages}"
-        page_text = "\n".join(lines_copy)
-        
-        # If the page dimensions are different, we might need a new corner, 
-        # but typically they are the same. We use the same start_x, start_y.
-        # But let's recalculate the rect just in case.
-        text_rect_n = fitz.Rect(x_offset, start_y, x_offset + text_box_w, start_y + text_box_h)
-        if not is_bottom:
-            text_rect_n = fitz.Rect(
-                x_offset, start_y + gap,
-                x_offset + text_box_w, start_y + gap + text_box_h
-            )
-            
-        current_page.draw_rect(text_rect_n, color=(1, 0, 0), fill=(1, 1, 0), width=1.5)
-        current_page.insert_textbox(
-            text_rect_n,
-            page_text,
-            fontsize=font_size,
-            fontname="helv",
-            color=(0, 0, 0),
-            align=0,
-        )
-
-    doc.save(str(output_path), deflate=True, garbage=4, clean=True, linear=False)
+    doc.save(str(output_path), deflate=True, clean=False)
     doc.close()
 
 

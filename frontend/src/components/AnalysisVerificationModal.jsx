@@ -158,7 +158,7 @@ export const AnalysisVerificationModal = ({
                  <div className="text-sm">
                     <p className="text-amber-200 font-medium">Attention Required</p>
                     <p className="text-amber-200/60 leading-relaxed">
-                       Our AI detected critical design changes (Grounding G, Power Block, Node Upgrades, or Power Supply).
+                       Our AI detected critical design changes (Splitter Change G, Power Block, Power Supply Warnings, or Tap EQ Warnings).
                        Compare the Before and After tiles side-by-side below. You can rename or remove these callouts if they are incorrect.
                     </p>
                  </div>

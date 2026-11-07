@@ -2,8 +2,12 @@ import os
 import json
 import logging
 from pathlib import Path
-from google.cloud import storage
-from google.oauth2 import service_account
+try:
+    from google.cloud import storage
+    from google.oauth2 import service_account
+except ImportError:
+    storage = None
+    service_account = None
 
 logger = logging.getLogger(__name__)
 
@@ -11,7 +15,7 @@ logger = logging.getLogger(__name__)
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
 
 def get_gcs_client():
-    if not GCS_BUCKET_NAME:
+    if not GCS_BUCKET_NAME or storage is None:
         return None
     try:
         # Check all common credential env var names (order of preference)
