@@ -235,11 +235,13 @@ def run_pipeline_sync(job_id, job_store, settings, detector=None, **kwargs):
                     # 1. G (Splitter Change)
                     # 2. Powerblock (ADD POWER BLOCK, REMOVE POWER BLOCK, POWERBLOCK)
                     # 3. Warning when power supply detected (WARNING: Power Supply Detected, POWER SUPPLY OVER 80%)
-                    # 4. Tap with alphabet / eqz writing only detected
+                    # 4. Tap with EQ writing only (e.g. EQ, EQZ; exclude JP and other non-EQ alphabets)
                     is_g = (text_upper == "G")
                     is_powerblock = ("POWERBLOCK" in text_upper or "POWER BLOCK" in text_upper)
                     is_ps_warning = ("POWER SUPPLY" in text_upper and ("WARNING" in text_upper or "OVER 80%" in text_upper)) or (text_upper == "WARNING: POWER SUPPLY DETECTED")
-                    is_tap_warning = (desc == "Alphabet in Tap Label") or ("WARNING" in text_upper and ("TAP" in text_upper or any(x in text_upper for x in ["EQ", "EQZ"])))
+                    has_eq = any(x in text_upper for x in ["EQ", "EQZ"]) or any(x in desc.upper() for x in ["EQ", "EQZ"])
+                    is_tap = ("TAP" in text_upper) or ("TAP" in desc.upper()) or (desc == "Alphabet in Tap Label")
+                    is_tap_warning = is_tap and has_eq and ("JP" not in text_upper)
                     
                     is_flagged = is_g or is_powerblock or is_ps_warning or is_tap_warning
                     if is_flagged:

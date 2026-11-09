@@ -143,23 +143,35 @@ def generate_vector_report(
     placed_rects.append(title_reserve)
     hard_rects.append(title_reserve)
 
+    placed_callouts: list[dict] = []
+
     # ── Render callout annotations ────────────────────────────────────────────
     if callout_records:
         CALLOUT_FONT_SIZE = 10          # 10pt Helvetica as per specification
         DEDUP_RADIUS_PTS  = 80.0        # Merge identical labels within 80pt
         
-        # Arrow offset: coax (high DPI >= 300) works best with 30, fiber (low DPI <= 90) needs 65+
-        if dpi < 100:
-            ARROW_OFFSET_PTS = 65.0
-        elif dpi < 200:
-            ARROW_OFFSET_PTS = 45.0
-        else:
-            ARROW_OFFSET_PTS = 30.0
+        # Arrow offset: In image pixels, we want ~16px offset from symbol center
+        # so the arrow tip touches the outer edge of the symbol without obscuring its center.
+        # In PDF points: offset_pts = offset_px * (72.0 / dpi)
+        # At 800 DPI: ~1.5pt (~17px); at 300 DPI: ~3.8pt (~16px); at 72 DPI: ~16pt (~16px)
+        offset_px = 16.0
+        ARROW_OFFSET_PTS = max(1.5, min(22.0, offset_px * (72.0 / dpi)))
 
         SEARCH_RADIUS_MAX = 600         # Max spiral search for free space
 
+        # Sort priority: B and NODE first so they suppress subordinate 'A' callouts
+        def _callout_prio(r):
+            t = r.get("text", "").upper()
+            if t.startswith("B") or "NODE" in t:
+                return 0
+            if t.startswith("A"):
+                return 2
+            return 1
+
+        sorted_records = sorted(callout_records, key=_callout_prio)
+
         unique: list[dict] = []
-        for rec in callout_records:
+        for rec in sorted_records:
             # Prefer global coords (gx/gy) — fallback to lx/ly (tile-relative)
             if "gx" in rec and "gy" in rec:
                 gx, gy = float(rec["gx"]), float(rec["gy"])
@@ -177,15 +189,26 @@ def generate_vector_report(
             pdf_y = img_y * (72.0 / dpi)
             text  = rec.get("text", "")
 
-            # Dedup & conflict suppression
+            # 1. Conflict suppression: Suppress A if B or NODE exists near this position
+            is_a = text == "A" or text.startswith("A,") or text.startswith("A ") or text.startswith("A-")
             has_b_or_node = any(
-                (c["text"] == "B" or "NODE" in c["text"]) and
+                (c["text"] == "B" or c["text"].startswith("B,") or c["text"].startswith("B ") or "NODE" in c["text"].upper()) and
                 math.hypot(pdf_x - c["pdf_x"], pdf_y - c["pdf_y"]) < DEDUP_RADIUS_PTS
                 for c in unique
             )
-            if text == "A" and has_b_or_node:
+            if is_a and has_b_or_node:
                 continue
 
+            # 2. Suppress duplicate A callouts for the same symbol across models
+            has_existing_a = any(
+                (c["text"] == "A" or c["text"].startswith("A,") or c["text"].startswith("A ") or c["text"].startswith("A-")) and
+                math.hypot(pdf_x - c["pdf_x"], pdf_y - c["pdf_y"]) < DEDUP_RADIUS_PTS
+                for c in unique
+            )
+            if is_a and has_existing_a:
+                continue
+
+            # 3. Standard dedup: merge identical labels within DEDUP_RADIUS_PTS
             if not any(
                 c["text"] == text and
                 math.hypot(pdf_x - c["pdf_x"], pdf_y - c["pdf_y"]) < DEDUP_RADIUS_PTS
@@ -205,11 +228,11 @@ def generate_vector_report(
             # The reference logic explicitly required img_x and img_y
             cx_img, cy_img = cx_pdf * (dpi / 72.0), cy_pdf * (dpi / 72.0)
 
-            # ── Exclusion zone: reserve 35pt radius around the symbol ─────────
-            SYMBOL_GUARD_PTS = 35.0
+            # ── Exclusion zone: reserve symbol guard around the symbol ─────────
+            symbol_guard_pts = max(14.0, min(25.0, 24.0 * (72.0 / dpi)))
             symbol_guard = fitz.Rect(
-                cx_pdf - SYMBOL_GUARD_PTS, cy_pdf - SYMBOL_GUARD_PTS,
-                cx_pdf + SYMBOL_GUARD_PTS, cy_pdf + SYMBOL_GUARD_PTS,
+                cx_pdf - symbol_guard_pts, cy_pdf - symbol_guard_pts,
+                cx_pdf + symbol_guard_pts, cy_pdf + symbol_guard_pts,
             )
             placed_rects.append(symbol_guard)
 
@@ -278,6 +301,7 @@ def generate_vector_report(
                         pass
                     annot.update()
                     _patch_annot_color(doc, annot, font_size=CALLOUT_FONT_SIZE)
+                    placed_callouts.append(c)
                 except Exception as err:
                     logger.warning(f"Could not place design note: {err}")
                 continue
@@ -286,8 +310,8 @@ def generate_vector_report(
             best_px, best_py = None, None
             best_density = 999.0
             
-            # Radii to search: starting close (80pt) to far (450pt)
-            radii = np.arange(80 * (dpi / 72.0), 450 * (dpi / 72.0), 30 * (dpi / 72.0))
+            # Radii to search: starting close (35pt) to far (320pt)
+            radii = np.arange(35 * (dpi / 72.0), 320 * (dpi / 72.0), 20 * (dpi / 72.0))
             angles = np.linspace(0, 2 * math.pi, 24, endpoint=False)
             
             # --- Attempt 1: Strict (clean background, no symbol guard overlap)
@@ -388,12 +412,13 @@ def generate_vector_report(
             if not found and best_px is not None and best_density < 0.30:
                 found = True
             
-            # --- Attempt 4: Fallback (absolute backup offset, ensuring we at least don't overlap hard rects)
+            # --- Attempt 4: Fallback (graduated backup offsets, ensuring we don't overlap hard rects)
             if not found:
-                # If no clear space, default to 180px offset but try to find one that doesn't intersect hard_rects
+                # If no clear space, try smaller offsets before wider offsets
                 fallback_offsets = [
-                    (180, -180), (-180, -180), (180, 180), (-180, 180),
-                    (250, -250), (-250, -250), (250, 250), (-250, 250)
+                    (45, -45), (-45, -45), (45, 45), (-45, 45),
+                    (70, -70), (-70, -70), (70, 70), (-70, 70),
+                    (100, -100), (-100, -100), (100, 100), (-100, 100)
                 ]
                 for ox, oy in fallback_offsets:
                     px = cx_img + ox * (dpi / 72.0)
@@ -409,7 +434,7 @@ def generate_vector_report(
                 
                 if not found:
                     # absolute fallback if all offsets are blocked
-                    best_px, best_py = cx_img + 200 * (dpi / 72.0), cy_img - 200 * (dpi / 72.0)
+                    best_px, best_py = cx_img + 50 * (dpi / 72.0), cy_img - 50 * (dpi / 72.0)
             
             ex_img, ey_img = best_px, best_py
 
@@ -479,6 +504,7 @@ def generate_vector_report(
                     pass
                 annot.update()
                 _patch_annot_color(doc, annot, font_size=CALLOUT_FONT_SIZE, is_callout=True)
+                placed_callouts.append(c)
             except Exception as err:
                 logger.warning(f"Could not place callout '{text}': {err}")
 
@@ -491,7 +517,7 @@ def generate_vector_report(
             page_num=i + 1,
             total_pages=total_pages,
             include_legend=include_legend and (i == 0),
-            callouts=callout_records
+            callouts=placed_callouts
         )
 
     # ── Final appearance stream patch pass across all pages and annotations ──
@@ -795,12 +821,63 @@ def _draw_legend_stack(
 
         counts = {k: 0 for k in LEGEND_DATA}
         callouts = kwargs.get("callouts", [])
+        if not callouts:
+            # Fallback: inspect callout annotations present on the page directly
+            callouts = []
+            for a in page.annots():
+                if a.type[0] == 2:  # FreeText
+                    try:
+                        it_val = page.parent.xref_get_key(a.xref, "IT")[1]
+                        if it_val == "/FreeTextCallout":
+                            content = a.info.get("content", "")
+                            if content:
+                                callouts.append({"text": content})
+                    except Exception:
+                        pass
+
         for c in callouts:
-            t = c.get("text", "")
-            if t:
-                first = t[0].upper()
-                if first in counts:
-                    counts[first] += 1
+            if c.get("is_design_note"):
+                continue
+            t = c.get("text", "").strip()
+            if not t:
+                continue
+            t_upper = t.upper()
+            if t_upper.startswith("DESIGN NOTE") or t_upper.startswith("WARNING"):
+                continue
+            if "POWER BLOCK" in t_upper or "POWERBLOCK" in t_upper:
+                continue
+            if "POWER SUPPLY" in t_upper or "UPGRADE NODE" in t_upper or "REPLACE EXISTING" in t_upper:
+                continue
+            if "UPGRADE INT" in t_upper:
+                continue
+
+            # 1. Match single-letter code at start (e.g. 'A', 'A, ...', 'A SWAP...', 'E, ADD TERM', 'J...')
+            m = re.match(r"^([A-K])\b", t, re.IGNORECASE)
+            code = None
+            if m:
+                code = m.group(1).upper()
+            else:
+                # 2. Match exact or leading action description from LEGEND_DATA
+                for k_code, action in LEGEND_DATA.items():
+                    act_upper = action.upper()
+                    if t_upper == act_upper or t_upper.startswith(act_upper + " ") or t_upper.startswith(act_upper + ","):
+                        code = k_code
+                        break
+                # 3. Known rule descriptions
+                if not code:
+                    if "REMOVE EQUALIZER" in t_upper:
+                        code = "J"
+                    elif "LE -> AMP" in t_upper:
+                        code = "B"
+                    elif "SPLITTER CHANGE" in t_upper:
+                        code = "G"
+                    elif "TAP VAL" in t_upper:
+                        code = "E"
+                    elif "NEW LE" in t_upper or "NEW BOOSTER" in t_upper:
+                        code = "H"
+
+            if code and code in counts:
+                counts[code] += 1
 
         ry = curr_y
         hdr_font = max(8, int(11 * leg_scale))
